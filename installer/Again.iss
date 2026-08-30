@@ -1,5 +1,5 @@
 #define MyAppName "AGAIN"
-#define MyAppVersion "0.1.2"
+#define MyAppVersion "0.1.3"
 #define MyAppPublisher "6ixMedia SA"
 #define MyAppURL "https://www.6ixmediasa.com"
 #define MyAppExeName "Again.exe"
@@ -24,7 +24,7 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#MyAppExeName}
-VersionInfoVersion=0.1.2.0
+VersionInfoVersion=0.1.3.0
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription=AGAIN - Do it once. Never do it twice.
 
