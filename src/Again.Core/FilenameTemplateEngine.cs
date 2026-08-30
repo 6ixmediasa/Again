@@ -27,6 +27,16 @@ public static partial class FilenameTemplateEngine
             return prefix + NumberToken;
         }
 
+        // If the demonstrated output is explicitly numbered 1, treat that as the
+        // first item of a new output sequence. This covers demonstrations such as
+        // Screenshot (261) -> test1, where the user's intent is test2, test3, ...
+        if (outputMatch.Success && int.TryParse(outputMatch.Groups[2].Value, out var outputNumber) && outputNumber == 1)
+        {
+            var prefix = outputMatch.Groups[1].Value;
+            var width = outputMatch.Groups[2].Value.Length;
+            return prefix + (width > 1 ? $"{{sequence:{width}}}" : "{sequence}");
+        }
+
         return StemToken;
     }
 
@@ -36,10 +46,17 @@ public static partial class FilenameTemplateEngine
         return match.Success ? match.Groups[2].Value : null;
     }
 
-    public static string Apply(string template, string stem, string? trailingNumber)
+    public static string Apply(string template, string stem, string? trailingNumber, int sequenceNumber = 1)
     {
         var result = template.Replace(StemToken, stem, StringComparison.Ordinal);
         result = result.Replace(NumberToken, trailingNumber ?? stem, StringComparison.Ordinal);
+        result = SequenceTokenRegex().Replace(result, match =>
+        {
+            var widthText = match.Groups[1].Value;
+            if (int.TryParse(widthText, out var width) && width > 0)
+                return sequenceNumber.ToString($"D{Math.Min(width, 12)}");
+            return sequenceNumber.ToString();
+        });
         return SanitizeFileName(result);
     }
 
@@ -52,4 +69,7 @@ public static partial class FilenameTemplateEngine
 
     [GeneratedRegex("^(.*?)(\\d+)$", RegexOptions.CultureInvariant)]
     private static partial Regex TrailingNumberRegex();
+
+    [GeneratedRegex("\\{sequence(?::(\\d+))?\\}", RegexOptions.CultureInvariant)]
+    private static partial Regex SequenceTokenRegex();
 }
