@@ -32,9 +32,14 @@ public static class VisualIntentAnalyzer
 
         NormalizedCrop? crop = null;
         BitmapSource baseline;
+        ImageGeometryMode geometryMode;
 
-        if (output.PixelWidth <= source.PixelWidth && output.PixelHeight <= source.PixelHeight &&
-            (output.PixelWidth < source.PixelWidth || output.PixelHeight < source.PixelHeight))
+        if (source.PixelWidth == output.PixelWidth && source.PixelHeight == output.PixelHeight)
+        {
+            baseline = source;
+            geometryMode = ImageGeometryMode.PreserveOriginal;
+        }
+        else if (output.PixelWidth <= source.PixelWidth && output.PixelHeight <= source.PixelHeight)
         {
             var cropMatch = TryFindExactCrop(source, output);
             if (cropMatch is not null)
@@ -46,10 +51,12 @@ public static class VisualIntentAnalyzer
                     cropMatch.Value.Height / (double)source.PixelHeight);
                 baseline = new CroppedBitmap(source, cropMatch.Value);
                 baseline.Freeze();
+                geometryMode = ImageGeometryMode.CropRelative;
             }
             else if (aspectDelta <= 0.02)
             {
                 baseline = RenderToSize(source, output.PixelWidth, output.PixelHeight);
+                geometryMode = ImageGeometryMode.ResizeToFixedSize;
             }
             else
             {
@@ -60,6 +67,7 @@ public static class VisualIntentAnalyzer
         else if (aspectDelta <= 0.02)
         {
             baseline = RenderToSize(source, output.PixelWidth, output.PixelHeight);
+            geometryMode = ImageGeometryMode.ResizeToFixedSize;
         }
         else
         {
@@ -68,15 +76,22 @@ public static class VisualIntentAnalyzer
         }
 
         var overlayPath = TryExtractOverlay(baseline, output, workflowId);
-        var step = new ImageResizeStep(output.PixelWidth, output.PixelHeight, crop, overlayPath);
+        var step = new ImageResizeStep(output.PixelWidth, output.PixelHeight, crop, overlayPath, geometryMode);
 
-        var description = crop is not null
-            ? overlayPath is not null
-                ? "Detected crop plus a localized visual edit (such as text/paint marks). The edit is replayed as a local transparent overlay; typed text itself is not recorded."
-                : "Detected a crop from the demonstrated result."
-            : overlayPath is not null
-                ? "Detected proportional resize plus a localized visual edit (such as text/paint marks)."
-                : "Detected a proportional resize.";
+        var description = geometryMode switch
+        {
+            ImageGeometryMode.CropRelative when overlayPath is not null =>
+                "Detected a relative crop plus a localized visual edit. Each item keeps its own natural cropped dimensions; the demo output size is not forced onto later images.",
+            ImageGeometryMode.CropRelative =>
+                "Detected a relative crop. The same crop region will be applied proportionally to each image without stretching it.",
+            ImageGeometryMode.PreserveOriginal when overlayPath is not null =>
+                "Detected a localized visual edit with no resize or crop. Each image keeps its original dimensions.",
+            ImageGeometryMode.PreserveOriginal =>
+                "Detected an export/rename workflow that preserves each image's original dimensions.",
+            ImageGeometryMode.ResizeToFixedSize when overlayPath is not null =>
+                "Detected a proportional fixed-size resize plus a localized visual edit.",
+            _ => "Detected a proportional fixed-size resize."
+        };
 
         return VisualIntentAnalysis.Ok(step, description);
     }
@@ -93,33 +108,22 @@ public static class VisualIntentAnalyzer
         var outputPixels = CopyPixels(output);
         var sourceStride = source.PixelWidth * 4;
         var outputStride = outW * 4;
-
-        // Uniform samples are unreliable on screenshots with large blank areas.
-        // Prefer edges/content so a small offset cannot win merely because most
-        // sampled pixels are identical white background.
         var samples = BuildInformativeSamples(outputPixels, outW, outH, outputStride);
         var coarseStep = Math.Max(1, Math.Max(maxX, maxY) / 100);
 
         var best = FindBestOffset(
-            sourcePixels, outputPixels,
-            sourceStride, outputStride,
-            samples,
+            sourcePixels, outputPixels, sourceStride, outputStride, samples,
             0, maxX, 0, maxY, coarseStep);
 
         if (coarseStep > 1)
         {
             var radius = coarseStep * 2;
             best = FindBestOffset(
-                sourcePixels, outputPixels,
-                sourceStride, outputStride,
-                samples,
+                sourcePixels, outputPixels, sourceStride, outputStride, samples,
                 Math.Max(0, best.X - radius), Math.Min(maxX, best.X + radius),
-                Math.Max(0, best.Y - radius), Math.Min(maxY, best.Y + radius),
-                1);
+                Math.Max(0, best.Y - radius), Math.Min(maxY, best.Y + radius), 1);
         }
 
-        // Localized text/brush edits may disagree with the source, but the
-        // content-bearing pixels of the underlying crop still need to match.
         if (best.CloseRatio < 0.65 || best.AverageDifference > 60)
             return null;
 
@@ -141,8 +145,6 @@ public static class VisualIntentAnalyzer
                 var bestX = -1;
                 var bestY = -1;
 
-                // Sampling every other pixel keeps crop analysis fast while
-                // still finding device edges, text, icons and other structure.
                 for (var y = Math.Max(1, tileY); y < endY; y += 2)
                 {
                     for (var x = Math.Max(1, tileX); x < endX; x += 2)
@@ -152,7 +154,6 @@ public static class VisualIntentAnalyzer
                         var up = PixelDifference(outputPixels, index, outputPixels, index - stride);
                         var gradient = Math.Max(left, up);
                         if (gradient <= bestGradient) continue;
-
                         bestGradient = gradient;
                         bestX = x;
                         bestY = y;
@@ -164,8 +165,6 @@ public static class VisualIntentAnalyzer
             }
         }
 
-        // Very flat images may not contain enough edges. Fall back to a small
-        // spatial grid rather than failing purely because the subject is flat.
         if (samples.Count < 80)
         {
             foreach (var y in EvenSamples(height, 14))
@@ -248,7 +247,6 @@ public static class VisualIntentAnalyzer
                 var isChanged = PixelDifference(basePixels, index, outputPixels, index) >= OverlayPixelThreshold;
                 changed[y * width + x] = isChanged;
                 if (!isChanged) continue;
-
                 var tileIndex = (y / OverlayTileSize) * tilesX + (x / OverlayTileSize);
                 changedPerTile[tileIndex]++;
             }
@@ -270,12 +268,7 @@ public static class VisualIntentAnalyzer
 
         var activeTileRatio = activeTiles / (double)(tilesX * tilesY);
         if (activeTileRatio > MaxOverlayTileCoverage)
-        {
-            // A true text/brush overlay is localized. Broadly scattered
-            // differences usually mean crop misalignment or a different base
-            // image; never bake those pixels over every following item.
             return null;
-        }
 
         var overlayPixels = new byte[outputPixels.Length];
         var kept = 0;
@@ -308,10 +301,7 @@ public static class VisualIntentAnalyzer
         }
 
         var ratio = kept / (double)(width * height);
-        if (ratio < 0.00008)
-            return null;
-
-        if (ratio > 0.15)
+        if (ratio < 0.00008 || ratio > 0.15)
             return null;
 
         var overlay = BitmapSource.Create(width, height, 96, 96, PixelFormats.Bgra32, null, overlayPixels, stride);
