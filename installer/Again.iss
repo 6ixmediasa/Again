@@ -18,7 +18,6 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=..\artifacts\installer
 OutputBaseFilename=AGAIN-Setup-v{#MyAppVersion}
-SetupIconFile=..\assets\again.ico
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
