@@ -24,3 +24,5 @@
 This source package has **not** been claimed as compiled. The original authoring environment was Linux and could not perform the required WPF/Windows compile locally.
 
 This repository includes a Windows GitHub Actions workflow that performs the actual .NET 8 build, smoke tests, self-contained win-x64 publish and Inno Setup packaging. Successful CI artifacts are the authoritative test builds.
+
+A Windows CI compile was requested after the complete V0.1 source tree was uploaded.
