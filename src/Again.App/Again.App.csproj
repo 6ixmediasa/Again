@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AssemblyName>Again</AssemblyName>
+    <RootNamespace>Again.App</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>..\..\assets\again.ico</ApplicationIcon>
+    <Version>0.1.0</Version>
+    <FileVersion>0.1.0.0</FileVersion>
+    <AssemblyVersion>0.1.0.0</AssemblyVersion>
+    <Product>AGAIN</Product>
+    <Company>6ixMedia SA</Company>
+    <Copyright>Copyright © 2026 6ixMedia SA</Copyright>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Again.Core\Again.Core.csproj" />
+    <ProjectReference Include="..\Again.Windows\Again.Windows.csproj" />
+  </ItemGroup>
+</Project>
