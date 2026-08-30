@@ -11,6 +11,13 @@ public enum ImageOutputFormat
     Gif
 }
 
+public enum ImageGeometryMode
+{
+    ResizeToFixedSize,
+    CropRelative,
+    PreserveOriginal
+}
+
 public sealed record NormalizedCrop(double X, double Y, double Width, double Height)
 {
     [JsonIgnore]
@@ -23,7 +30,8 @@ public sealed record ImageResizeStep(
     int Width,
     int Height,
     NormalizedCrop? Crop = null,
-    string? OverlayAssetPath = null)
+    string? OverlayAssetPath = null,
+    ImageGeometryMode GeometryMode = ImageGeometryMode.ResizeToFixedSize)
 {
     [JsonIgnore]
     public bool HasCrop => Crop is { IsValid: true };
@@ -33,10 +41,15 @@ public sealed record ImageResizeStep(
 
     public override string ToString()
     {
-        if (HasCrop && HasOverlay) return $"Crop + visual overlay → {Width} × {Height}";
-        if (HasCrop) return $"Crop image → {Width} × {Height}";
-        if (HasOverlay) return $"Resize + visual overlay → {Width} × {Height}";
-        return $"Resize image to {Width} × {Height}";
+        return GeometryMode switch
+        {
+            ImageGeometryMode.CropRelative when HasOverlay => "Relative crop + visual overlay",
+            ImageGeometryMode.CropRelative => "Relative crop",
+            ImageGeometryMode.PreserveOriginal when HasOverlay => "Visual overlay · preserve original size",
+            ImageGeometryMode.PreserveOriginal => "Preserve original size",
+            _ when HasOverlay => $"Resize + visual overlay → {Width} × {Height}",
+            _ => $"Resize image to {Width} × {Height}"
+        };
     }
 }
 

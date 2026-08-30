@@ -14,7 +14,7 @@ Check(FilenameTemplateEngine.Infer("Screenshot (261)", "test1") == "test{sequenc
 Check(FilenameTemplateEngine.Apply("test{sequence}", "Screenshot (262)", null, 2) == "test2", "sequential filename apply");
 Check(FilenameTemplateEngine.Apply("frame{sequence:3}", "anything", null, 7) == "frame007", "padded sequence apply");
 Check(WorkflowDetector.TryGetFormat("x.jpeg") == ImageOutputFormat.Jpeg, "jpeg format");
-Check(WorkflowDetector.TryGetFormat("x.webp") is null, "unsupported webp in v0.1.1");
+Check(WorkflowDetector.TryGetFormat("x.webp") is null, "unsupported webp in v0.1.3");
 
 var source = new ImageFileInfo(@"C:\Input\IMG_001.png", 2000, 1000, 100, DateTime.UtcNow);
 var output = new ImageFileInfo(@"C:\Input\Edited\Holiday 001.jpg", 1200, 600, 80, DateTime.UtcNow);
@@ -23,10 +23,16 @@ Check(detected.Success, "workflow detection succeeds");
 Check(detected.Workflow?.Resize.Width == 1200 && detected.Workflow.Resize.Height == 600, "target dimensions inferred");
 Check(detected.Workflow?.Output.FilenameTemplate == "Holiday {number}", "output filename variable inferred");
 
+var sameSizeOutput = new ImageFileInfo(@"C:\Input\Edited\demo1.jpg", 2000, 1000, 80, DateTime.UtcNow);
+var sameSizeDetected = WorkflowDetector.Detect(source, sameSizeOutput);
+Check(sameSizeDetected.Success, "text-only/preserve-size workflow detection succeeds");
+Check(sameSizeDetected.Workflow?.Resize.GeometryMode == ImageGeometryMode.PreserveOriginal, "same-size workflow preserves original geometry");
+
 var crop = new NormalizedCrop(0.05, 0.10, 0.90, 0.80);
-var cropStep = new ImageResizeStep(1800, 800, crop, @"C:\overlay.png");
+var cropStep = new ImageResizeStep(1800, 800, crop, @"C:\overlay.png", ImageGeometryMode.CropRelative);
 Check(cropStep.HasCrop, "crop step reports crop");
 Check(cropStep.HasOverlay, "crop step reports overlay");
+Check(cropStep.GeometryMode == ImageGeometryMode.CropRelative, "crop step is relative");
 
 if (failures.Count > 0)
 {

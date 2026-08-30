@@ -48,7 +48,7 @@ public partial class MainWindow : Window
         WorkflowName.Text = "Nothing yet";
         WorkflowSteps.Text = "The first selected image is the demonstration item.";
         StatusHeadline.Text = _selectedFiles.Count == 1 ? "Add at least one more image to prove repetition." : $"{_selectedFiles.Count} images ready.";
-        StatusDetail.Text = "Click WATCH ME. AGAIN will open the first image in Paint. Crop or resize it, optionally add localized text/marks, rename and Save As. Then return here and click AGAIN.";
+        StatusDetail.Text = "Click WATCH ME. In Paint you can crop, proportionally resize, add localized text/marks, rename and Save As. A text-only edit is supported too.";
         SetState(_selectedFiles.Count >= 2 ? UiState.Ready : UiState.Empty);
     }
 
@@ -61,7 +61,7 @@ public partial class MainWindow : Window
         WorkflowName.Text = "Nothing yet";
         WorkflowSteps.Text = "AGAIN will summarize the demonstrated image workflow here.";
         StatusHeadline.Text = "Choose the images you want to process.";
-        StatusDetail.Text = "The first image is the demonstration. AGAIN compares the before/after image locally to infer crop/resize, localized visual edits, output format, destination and naming intent.";
+        StatusDetail.Text = "The first image is the demonstration. AGAIN compares the before/after image locally to infer relative crop, fixed resize, preserve-size visual edits, output format, destination and naming intent.";
         SetState(UiState.Empty);
     }
 
@@ -82,7 +82,7 @@ public partial class MainWindow : Window
             });
 
             StatusHeadline.Text = "I’m watching this demonstration locally.";
-            StatusDetail.Text = "In Paint: crop or proportionally resize the first image, optionally add localized text/paint marks, then rename and Save As/export it. When finished, return here and click AGAIN.";
+            StatusDetail.Text = "In Paint: crop, resize, or leave the dimensions unchanged and only add localized text/paint marks. Then rename and Save As/export it. When finished, return here and click AGAIN.";
             WorkflowName.Text = "Watching…";
             WorkflowSteps.Text = "AGAIN does not record your typed text. It infers supported visual edits by comparing the local before/after image.";
             SetState(UiState.Watching);
@@ -167,14 +167,20 @@ public partial class MainWindow : Window
         {
             StatusHeadline.Text = "I stopped instead of distorting the images.";
             StatusDetail.Text = visual.Message;
-            WorkflowName.Text = "Ambiguous crop/resize";
+            WorkflowName.Text = "Ambiguous image transformation";
             SetState(UiState.Ready);
             return;
         }
 
-        var name = visual.Step.HasCrop
-            ? visual.Step.HasOverlay ? "Crop + visual edit + export image" : "Crop + export image"
-            : visual.Step.HasOverlay ? "Resize + visual edit + export image" : "Resize + export image";
+        var name = visual.Step.GeometryMode switch
+        {
+            ImageGeometryMode.CropRelative when visual.Step.HasOverlay => "Relative crop + visual edit + export image",
+            ImageGeometryMode.CropRelative => "Relative crop + export image",
+            ImageGeometryMode.PreserveOriginal when visual.Step.HasOverlay => "Visual edit + export image",
+            ImageGeometryMode.PreserveOriginal => "Rename/convert + export image",
+            _ when visual.Step.HasOverlay => "Resize + visual edit + export image",
+            _ => "Resize + export image"
+        };
 
         _workflow = detection.Workflow with
         {
@@ -234,12 +240,15 @@ public partial class MainWindow : Window
                 CurrentItem.Text = Path.GetFileName(input);
                 ProgressText.Text = $"Processing {i + 1} of {remaining.Length}  ·  {workflow.Resize}";
                 StatusHeadline.Text = $"AGAIN · Processing {i + 1} of {remaining.Length}";
-                StatusDetail.Text = workflow.Resize.HasCrop
-                    ? "Current step: crop → visual overlay (if detected) → encode → validate."
-                    : "Current step: proportional resize → visual overlay (if detected) → encode → validate.";
+                StatusDetail.Text = workflow.Resize.GeometryMode switch
+                {
+                    ImageGeometryMode.CropRelative => "Current step: relative crop → visual overlay (if detected) → encode → validate.",
+                    ImageGeometryMode.PreserveOriginal => "Current step: preserve image size → visual overlay (if detected) → encode → validate.",
+                    _ => "Current step: proportional fixed resize → visual overlay (if detected) → encode → validate."
+                };
 
                 await ImageProcessor.ProcessAsync(input, output, workflow.Resize, workflow.Output, token);
-                ImageProcessor.Validate(output, workflow.Resize);
+                ImageProcessor.Validate(output, input, workflow.Resize);
 
                 results.Add(new BatchItemResult(input, output, true, false, "Completed and validated."));
                 Progress.Value = i + 1;
@@ -266,7 +275,7 @@ public partial class MainWindow : Window
         if (summary.Errors == 0 && !token.IsCancellationRequested)
         {
             StatusHeadline.Text = "Done.";
-            StatusDetail.Text = $"{summary.Completed} tasks completed, {summary.Errors} errors. Every produced image passed existence and dimension validation.";
+            StatusDetail.Text = $"{summary.Completed} tasks completed, {summary.Errors} errors. Every produced image passed existence and per-item dimension validation.";
         }
         else if (token.IsCancellationRequested)
         {
