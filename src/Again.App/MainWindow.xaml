@@ -1,0 +1,119 @@
+<Window x:Class="Again.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="AGAIN" Width="760" Height="720" MinWidth="680" MinHeight="620"
+        WindowStartupLocation="CenterScreen" Background="{StaticResource Bg}">
+    <Grid Margin="34">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="18"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="18"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="18"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <StackPanel>
+                <TextBlock Text="AGAIN" FontFamily="Segoe UI Black" FontSize="42" FontWeight="Black"/>
+                <TextBlock Text="Do it once. Never do it twice." Foreground="{StaticResource Muted}" FontSize="15" Margin="2,-4,0,0"/>
+            </StackPanel>
+            <Border Grid.Column="1" Background="{StaticResource Panel}" BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="16" Padding="13,7" VerticalAlignment="Top">
+                <TextBlock x:Name="MonitoringBadge" Text="MONITORING OFF" Foreground="{StaticResource Muted}" FontSize="11" FontWeight="SemiBold"/>
+            </Border>
+        </Grid>
+
+        <Border Grid.Row="2" Background="{StaticResource Panel}" BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="14" Padding="20">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="12"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <TextBlock x:Name="StatusHeadline" Text="Choose the images you want to process." FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                <TextBlock x:Name="StatusDetail" Grid.Row="2" Text="The first image will be your demonstration. V0.1 watches Paint plus the resulting image file, then repeats the detected resize/export intent locally." Foreground="{StaticResource Muted}" FontSize="13" TextWrapping="Wrap" LineHeight="20"/>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="4">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="1.15*"/>
+                <ColumnDefinition Width="18"/>
+                <ColumnDefinition Width="1*"/>
+            </Grid.ColumnDefinitions>
+
+            <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="14" Padding="18">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="12"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="14"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Text="Items" FontWeight="SemiBold" FontSize="14"/>
+                    <ListBox x:Name="FilesList" Grid.Row="2" Background="Transparent" BorderThickness="0" Foreground="{StaticResource Text}" FontFamily="Segoe UI" FontSize="12"/>
+                    <StackPanel Grid.Row="4" Orientation="Horizontal">
+                        <Button x:Name="SelectFilesButton" Content="SELECT FILES" Click="SelectFiles_Click"/>
+                        <Button x:Name="ClearButton" Content="CLEAR" Click="Clear_Click"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <Border Grid.Column="2" Background="{StaticResource Panel}" BorderBrush="{StaticResource Border}" BorderThickness="1" CornerRadius="14" Padding="18">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="14"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="12"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="12"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Text="Detected workflow" FontWeight="SemiBold" FontSize="14"/>
+                    <TextBlock x:Name="WorkflowName" Grid.Row="2" Text="Nothing yet" FontSize="17" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                    <TextBlock x:Name="WorkflowSteps" Grid.Row="4" Text="AGAIN will summarize the demonstrated resize/export here." Foreground="{StaticResource Muted}" FontSize="12" TextWrapping="Wrap" LineHeight="18"/>
+                    <TextBlock x:Name="CurrentItem" Grid.Row="6" Text="" FontSize="12" TextWrapping="Wrap"/>
+                    <StackPanel Grid.Row="8">
+                        <ProgressBar x:Name="Progress" Height="7" Minimum="0" Maximum="1" Value="0" Margin="0,0,0,12"/>
+                        <TextBlock x:Name="ProgressText" Text="" Foreground="{StaticResource Muted}" FontSize="12"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <Grid Grid.Row="6">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="12"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel Orientation="Horizontal">
+                    <Button x:Name="WatchButton" Content="WATCH ME" Click="Watch_Click" IsEnabled="False"/>
+                    <Button x:Name="AgainButton" Content="AGAIN" Click="Again_Click" IsEnabled="False" Background="{StaticResource Accent}" Foreground="{StaticResource AccentText}" FontSize="15" Padding="28,11"/>
+                    <Button x:Name="PauseButton" Content="PAUSE" Click="Pause_Click" IsEnabled="False"/>
+                    <Button x:Name="SkipButton" Content="SKIP ITEM" Click="Skip_Click" IsEnabled="False"/>
+                    <Button x:Name="StopButton" Content="STOP" Click="Stop_Click" IsEnabled="False"/>
+                </StackPanel>
+                <Button x:Name="OpenResultsButton" Grid.Column="1" Content="OPEN RESULTS" Click="OpenResults_Click" Visibility="Collapsed"/>
+            </Grid>
+            <TextBlock Grid.Row="2" FontSize="11" Foreground="{StaticResource Muted}">
+                <Run Text="Local-first · No screenshots or typed text are uploaded · "/>
+                <Hyperlink NavigateUri="https://www.6ixmediasa.com" RequestNavigate="FooterLink_RequestNavigate" Foreground="{StaticResource Muted}">Crafted with &lt;3 by 6ixMedia SA</Hyperlink>
+            </TextBlock>
+        </Grid>
+    </Grid>
+</Window>
