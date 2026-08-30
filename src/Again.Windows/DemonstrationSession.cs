@@ -45,7 +45,10 @@ public sealed class DemonstrationSession : IDisposable
         var scored = new List<(string Path, int Score, DateTimeOffset Timestamp)>();
         foreach (var activity in activities)
         {
-            if (!File.Exists(activity.Path) || !ImageInspector.TryRead(activity.Path, out var candidate) || candidate is null)
+            if (!File.Exists(activity.Path))
+                continue;
+
+            if (!ImageInspector.TryRead(activity.Path, out var candidate) || candidate is null)
                 continue;
 
             var score = 0;
