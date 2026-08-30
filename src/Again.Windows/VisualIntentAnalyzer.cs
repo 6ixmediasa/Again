@@ -15,6 +15,11 @@ public static class VisualIntentAnalyzer
 {
     private const int ClosePixelThreshold = 42;
     private const int OverlayPixelThreshold = 58;
+    private const int InformativeGradientThreshold = 18;
+    private const int OverlayTileSize = 32;
+    private const double MaxOverlayTileCoverage = 0.12;
+
+    private readonly record struct SamplePoint(int X, int Y);
 
     public static VisualIntentAnalysis AnalyzeAndPersist(string sourcePath, string demonstratedOutputPath, Guid workflowId)
     {
@@ -89,14 +94,16 @@ public static class VisualIntentAnalyzer
         var sourceStride = source.PixelWidth * 4;
         var outputStride = outW * 4;
 
-        var sampleXs = EvenSamples(outW, 18);
-        var sampleYs = EvenSamples(outH, 14);
+        // Uniform samples are unreliable on screenshots with large blank areas.
+        // Prefer edges/content so a small offset cannot win merely because most
+        // sampled pixels are identical white background.
+        var samples = BuildInformativeSamples(outputPixels, outW, outH, outputStride);
         var coarseStep = Math.Max(1, Math.Max(maxX, maxY) / 100);
 
         var best = FindBestOffset(
             sourcePixels, outputPixels,
             sourceStride, outputStride,
-            sampleXs, sampleYs,
+            samples,
             0, maxX, 0, maxY, coarseStep);
 
         if (coarseStep > 1)
@@ -105,18 +112,68 @@ public static class VisualIntentAnalyzer
             best = FindBestOffset(
                 sourcePixels, outputPixels,
                 sourceStride, outputStride,
-                sampleXs, sampleYs,
+                samples,
                 Math.Max(0, best.X - radius), Math.Min(maxX, best.X + radius),
                 Math.Max(0, best.Y - radius), Math.Min(maxY, best.Y + radius),
                 1);
         }
 
-        // A localized text/brush edit is allowed to disagree with the source,
-        // while most sampled pixels should still identify the underlying crop.
-        if (best.CloseRatio < 0.52 || best.AverageDifference > 72)
+        // Localized text/brush edits may disagree with the source, but the
+        // content-bearing pixels of the underlying crop still need to match.
+        if (best.CloseRatio < 0.65 || best.AverageDifference > 60)
             return null;
 
         return new Int32Rect(best.X, best.Y, outW, outH);
+    }
+
+    private static SamplePoint[] BuildInformativeSamples(byte[] outputPixels, int width, int height, int stride)
+    {
+        const int tileSize = 24;
+        var samples = new List<SamplePoint>();
+
+        for (var tileY = 0; tileY < height; tileY += tileSize)
+        {
+            var endY = Math.Min(height, tileY + tileSize);
+            for (var tileX = 0; tileX < width; tileX += tileSize)
+            {
+                var endX = Math.Min(width, tileX + tileSize);
+                var bestGradient = 0;
+                var bestX = -1;
+                var bestY = -1;
+
+                // Sampling every other pixel keeps crop analysis fast while
+                // still finding device edges, text, icons and other structure.
+                for (var y = Math.Max(1, tileY); y < endY; y += 2)
+                {
+                    for (var x = Math.Max(1, tileX); x < endX; x += 2)
+                    {
+                        var index = y * stride + x * 4;
+                        var left = PixelDifference(outputPixels, index, outputPixels, index - 4);
+                        var up = PixelDifference(outputPixels, index, outputPixels, index - stride);
+                        var gradient = Math.Max(left, up);
+                        if (gradient <= bestGradient) continue;
+
+                        bestGradient = gradient;
+                        bestX = x;
+                        bestY = y;
+                    }
+                }
+
+                if (bestGradient >= InformativeGradientThreshold && bestX >= 0)
+                    samples.Add(new SamplePoint(bestX, bestY));
+            }
+        }
+
+        // Very flat images may not contain enough edges. Fall back to a small
+        // spatial grid rather than failing purely because the subject is flat.
+        if (samples.Count < 80)
+        {
+            foreach (var y in EvenSamples(height, 14))
+            foreach (var x in EvenSamples(width, 18))
+                samples.Add(new SamplePoint(x, y));
+        }
+
+        return samples.Distinct().ToArray();
     }
 
     private static (int X, int Y, double CloseRatio, double AverageDifference) FindBestOffset(
@@ -124,8 +181,7 @@ public static class VisualIntentAnalyzer
         byte[] outputPixels,
         int sourceStride,
         int outputStride,
-        int[] sampleXs,
-        int[] sampleYs,
+        IReadOnlyList<SamplePoint> samples,
         int minX,
         int maxX,
         int minY,
@@ -143,23 +199,18 @@ public static class VisualIntentAnalyzer
             {
                 long diffTotal = 0;
                 var close = 0;
-                var count = 0;
 
-                foreach (var sy in sampleYs)
+                foreach (var sample in samples)
                 {
-                    foreach (var sx in sampleXs)
-                    {
-                        var sourceIndex = ((y + sy) * sourceStride) + ((x + sx) * 4);
-                        var outputIndex = (sy * outputStride) + (sx * 4);
-                        var diff = PixelDifference(sourcePixels, sourceIndex, outputPixels, outputIndex);
-                        diffTotal += diff;
-                        if (diff <= ClosePixelThreshold) close++;
-                        count++;
-                    }
+                    var sourceIndex = ((y + sample.Y) * sourceStride) + ((x + sample.X) * 4);
+                    var outputIndex = (sample.Y * outputStride) + (sample.X * 4);
+                    var diff = PixelDifference(sourcePixels, sourceIndex, outputPixels, outputIndex);
+                    diffTotal += diff;
+                    if (diff <= ClosePixelThreshold) close++;
                 }
 
-                var closeRatio = close / (double)count;
-                var average = diffTotal / (double)count;
+                var closeRatio = close / (double)samples.Count;
+                var average = diffTotal / (double)samples.Count;
                 if (closeRatio > bestClose || (Math.Abs(closeRatio - bestClose) < 0.0001 && average < bestAverage))
                 {
                     bestX = x;
@@ -185,13 +236,45 @@ public static class VisualIntentAnalyzer
         var outputPixels = CopyPixels(demonstratedOutput);
         var changed = new bool[width * height];
 
+        var tilesX = (width + OverlayTileSize - 1) / OverlayTileSize;
+        var tilesY = (height + OverlayTileSize - 1) / OverlayTileSize;
+        var changedPerTile = new int[tilesX * tilesY];
+
         for (var y = 0; y < height; y++)
         {
             for (var x = 0; x < width; x++)
             {
                 var index = y * stride + x * 4;
-                changed[y * width + x] = PixelDifference(basePixels, index, outputPixels, index) >= OverlayPixelThreshold;
+                var isChanged = PixelDifference(basePixels, index, outputPixels, index) >= OverlayPixelThreshold;
+                changed[y * width + x] = isChanged;
+                if (!isChanged) continue;
+
+                var tileIndex = (y / OverlayTileSize) * tilesX + (x / OverlayTileSize);
+                changedPerTile[tileIndex]++;
             }
+        }
+
+        var activeTiles = 0;
+        for (var tileY = 0; tileY < tilesY; tileY++)
+        {
+            for (var tileX = 0; tileX < tilesX; tileX++)
+            {
+                var tileWidth = Math.Min(OverlayTileSize, width - tileX * OverlayTileSize);
+                var tileHeight = Math.Min(OverlayTileSize, height - tileY * OverlayTileSize);
+                var tileArea = tileWidth * tileHeight;
+                var minimumChanged = Math.Max(4, (int)Math.Ceiling(tileArea * 0.01));
+                if (changedPerTile[tileY * tilesX + tileX] >= minimumChanged)
+                    activeTiles++;
+            }
+        }
+
+        var activeTileRatio = activeTiles / (double)(tilesX * tilesY);
+        if (activeTileRatio > MaxOverlayTileCoverage)
+        {
+            // A true text/brush overlay is localized. Broadly scattered
+            // differences usually mean crop misalignment or a different base
+            // image; never bake those pixels over every following item.
+            return null;
         }
 
         var overlayPixels = new byte[outputPixels.Length];
@@ -213,8 +296,7 @@ public static class VisualIntentAnalyzer
                     }
                 }
 
-                if (!changed[y * width + x] && neighbors < 2) continue;
-                if (changed[y * width + x] && neighbors < 2) continue;
+                if (neighbors < 2) continue;
 
                 var index = y * stride + x * 4;
                 overlayPixels[index] = outputPixels[index];
@@ -229,8 +311,6 @@ public static class VisualIntentAnalyzer
         if (ratio < 0.00008)
             return null;
 
-        // If too much of the frame differs, this was not a localized text/paint
-        // edit. Refuse to turn broad image differences into a misleading overlay.
         if (ratio > 0.15)
             return null;
 
