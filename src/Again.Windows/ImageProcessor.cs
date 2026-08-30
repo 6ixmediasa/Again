@@ -26,12 +26,44 @@ public static class ImageProcessor
 
         cancellationToken.ThrowIfCancellationRequested();
 
+        BitmapSource imageToDraw = frame;
+        if (resize.Crop is { IsValid: true } crop)
+        {
+            var x = Math.Clamp((int)Math.Round(crop.X * frame.PixelWidth), 0, Math.Max(0, frame.PixelWidth - 1));
+            var y = Math.Clamp((int)Math.Round(crop.Y * frame.PixelHeight), 0, Math.Max(0, frame.PixelHeight - 1));
+            var width = Math.Clamp((int)Math.Round(crop.Width * frame.PixelWidth), 1, frame.PixelWidth - x);
+            var height = Math.Clamp((int)Math.Round(crop.Height * frame.PixelHeight), 1, frame.PixelHeight - y);
+            imageToDraw = new CroppedBitmap(frame, new Int32Rect(x, y, width, height));
+            imageToDraw.Freeze();
+        }
+
+        var sourceAspect = imageToDraw.PixelWidth / (double)imageToDraw.PixelHeight;
+        var targetAspect = resize.Width / (double)resize.Height;
+        var aspectDelta = Math.Abs(sourceAspect - targetAspect) / Math.Max(sourceAspect, targetAspect);
+        if (aspectDelta > 0.025)
+        {
+            throw new InvalidOperationException(
+                $"This item would be stretched ({imageToDraw.PixelWidth}×{imageToDraw.PixelHeight} → {resize.Width}×{resize.Height}). AGAIN stopped instead of distorting it.");
+        }
+
         var visual = new DrawingVisual();
         using (var dc = visual.RenderOpen())
         {
             if (outputRule.Format == ImageOutputFormat.Jpeg)
                 dc.DrawRectangle(Brushes.White, null, new Rect(0, 0, resize.Width, resize.Height));
-            dc.DrawImage(frame, new Rect(0, 0, resize.Width, resize.Height));
+
+            dc.DrawImage(imageToDraw, new Rect(0, 0, resize.Width, resize.Height));
+
+            if (!string.IsNullOrWhiteSpace(resize.OverlayAssetPath))
+            {
+                if (!File.Exists(resize.OverlayAssetPath))
+                    throw new IOException("The demonstrated visual overlay asset is missing. AGAIN stopped rather than silently dropping the text/edit.");
+
+                var overlay = LoadBitmap(resize.OverlayAssetPath);
+                if (overlay.PixelWidth != resize.Width || overlay.PixelHeight != resize.Height)
+                    throw new IOException("The demonstrated visual overlay no longer matches the workflow dimensions.");
+                dc.DrawImage(overlay, new Rect(0, 0, resize.Width, resize.Height));
+            }
         }
 
         var bitmap = new RenderTargetBitmap(resize.Width, resize.Height, 96, 96, PixelFormats.Pbgra32);
@@ -65,6 +97,18 @@ public static class ImageProcessor
                 try { File.Delete(tempPath); } catch { }
             }
         }
+    }
+
+    private static BitmapSource LoadBitmap(string path)
+    {
+        BitmapFrame frame;
+        using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+        {
+            var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+            frame = decoder.Frames[0];
+        }
+        frame.Freeze();
+        return frame;
     }
 
     public static void Validate(string outputPath, ImageResizeStep resize)

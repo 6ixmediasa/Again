@@ -11,9 +11,33 @@ public enum ImageOutputFormat
     Gif
 }
 
-public sealed record ImageResizeStep(int Width, int Height)
+public sealed record NormalizedCrop(double X, double Y, double Width, double Height)
 {
-    public override string ToString() => $"Resize image to {Width} × {Height}";
+    [JsonIgnore]
+    public bool IsValid => X >= 0 && Y >= 0 && Width > 0 && Height > 0 && X + Width <= 1.001 && Y + Height <= 1.001;
+
+    public override string ToString() => $"Crop {Width:P0} × {Height:P0} from ({X:P0}, {Y:P0})";
+}
+
+public sealed record ImageResizeStep(
+    int Width,
+    int Height,
+    NormalizedCrop? Crop = null,
+    string? OverlayAssetPath = null)
+{
+    [JsonIgnore]
+    public bool HasCrop => Crop is { IsValid: true };
+
+    [JsonIgnore]
+    public bool HasOverlay => !string.IsNullOrWhiteSpace(OverlayAssetPath);
+
+    public override string ToString()
+    {
+        if (HasCrop && HasOverlay) return $"Crop + visual overlay → {Width} × {Height}";
+        if (HasCrop) return $"Crop image → {Width} × {Height}";
+        if (HasOverlay) return $"Resize + visual overlay → {Width} × {Height}";
+        return $"Resize image to {Width} × {Height}";
+    }
 }
 
 public sealed record OutputRule(
@@ -33,11 +57,11 @@ public sealed record OutputRule(
         _ => throw new ArgumentOutOfRangeException()
     };
 
-    public string ResolveOutputPath(string inputPath)
+    public string ResolveOutputPath(string inputPath, int sequenceNumber = 1)
     {
         var stem = Path.GetFileNameWithoutExtension(inputPath);
         var number = FilenameTemplateEngine.ExtractTrailingNumber(stem);
-        var outputStem = FilenameTemplateEngine.Apply(FilenameTemplate, stem, number);
+        var outputStem = FilenameTemplateEngine.Apply(FilenameTemplate, stem, number, sequenceNumber);
         var candidate = Path.Combine(DestinationDirectory, outputStem + Extension);
         return Path.GetFullPath(candidate);
     }

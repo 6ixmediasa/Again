@@ -48,7 +48,7 @@ public partial class MainWindow : Window
         WorkflowName.Text = "Nothing yet";
         WorkflowSteps.Text = "The first selected image is the demonstration item.";
         StatusHeadline.Text = _selectedFiles.Count == 1 ? "Add at least one more image to prove repetition." : $"{_selectedFiles.Count} images ready.";
-        StatusDetail.Text = "Click WATCH ME. AGAIN will open the first image in Paint. Resize it and save/export it. When you are finished, click AGAIN here.";
+        StatusDetail.Text = "Click WATCH ME. AGAIN will open the first image in Paint. Crop or resize it, optionally add localized text/marks, rename and Save As. Then return here and click AGAIN.";
         SetState(_selectedFiles.Count >= 2 ? UiState.Ready : UiState.Empty);
     }
 
@@ -59,9 +59,9 @@ public partial class MainWindow : Window
         FilesList.ItemsSource = null;
         _workflow = null;
         WorkflowName.Text = "Nothing yet";
-        WorkflowSteps.Text = "AGAIN will summarize the demonstrated resize/export here.";
+        WorkflowSteps.Text = "AGAIN will summarize the demonstrated image workflow here.";
         StatusHeadline.Text = "Choose the images you want to process.";
-        StatusDetail.Text = "The first image will be your demonstration. V0.1 watches Paint plus the resulting image file, then repeats the detected resize/export intent locally.";
+        StatusDetail.Text = "The first image is the demonstration. AGAIN compares the before/after image locally to infer crop/resize, localized visual edits, output format, destination and naming intent.";
         SetState(UiState.Empty);
     }
 
@@ -82,9 +82,9 @@ public partial class MainWindow : Window
             });
 
             StatusHeadline.Text = "I’m watching this demonstration locally.";
-            StatusDetail.Text = "In Paint: resize the first image, then Save As/export it. Save within the source folder or a normal Desktop/Documents/Pictures/Downloads location for this V0.1 test. When finished, return here and click AGAIN.";
+            StatusDetail.Text = "In Paint: crop or proportionally resize the first image, optionally add localized text/paint marks, then rename and Save As/export it. When finished, return here and click AGAIN.";
             WorkflowName.Text = "Watching…";
-            WorkflowSteps.Text = "Window/process metadata + image-file changes only. AGAIN does not capture typed text or screenshots.";
+            WorkflowSteps.Text = "AGAIN does not record your typed text. It infers supported visual edits by comparing the local before/after image.";
             SetState(UiState.Watching);
         }
         catch (Exception ex)
@@ -113,7 +113,6 @@ public partial class MainWindow : Window
         AgainButton.IsEnabled = false;
         StatusHeadline.Text = "Understanding what changed…";
 
-        // Give pending FileSystemWatcher events a brief chance to arrive after Save As.
         await Task.Delay(450);
         _session.Stop();
 
@@ -121,7 +120,7 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(outputPath))
         {
             StatusHeadline.Text = "I couldn’t find the demonstrated output.";
-            StatusDetail.Text = "V0.1 watches the selected image folder plus Desktop, Documents, Pictures and Downloads. Save/export the demo into one of those locations, then run WATCH ME again.";
+            StatusDetail.Text = "AGAIN watches the selected image folder plus Desktop, Documents, Pictures and Downloads. Save/export the demo into one of those locations, then run WATCH ME again.";
             WorkflowName.Text = "No workflow detected";
             SetState(UiState.Ready);
             StopSession();
@@ -136,8 +135,9 @@ public partial class MainWindow : Window
             return;
         }
 
-        var detection = WorkflowDetector.Detect(_session.OriginalSourceInfo, outputInfo);
+        var sourceInfo = _session.OriginalSourceInfo;
         var sawPaint = _session.SawPaint();
+        var detection = WorkflowDetector.Detect(sourceInfo, outputInfo);
         StopSession();
 
         if (!detection.Success || detection.Workflow is null)
@@ -149,12 +149,45 @@ public partial class MainWindow : Window
             return;
         }
 
-        _workflow = detection.Workflow;
+        VisualIntentAnalysis visual;
+        try
+        {
+            visual = VisualIntentAnalyzer.AnalyzeAndPersist(sourceInfo.Path, outputPath, detection.Workflow.Id);
+        }
+        catch (Exception ex)
+        {
+            StatusHeadline.Text = "I couldn’t safely understand the visual edit.";
+            StatusDetail.Text = ex.Message + " No remaining images were changed.";
+            WorkflowName.Text = "Unsupported demonstration";
+            SetState(UiState.Ready);
+            return;
+        }
+
+        if (!visual.Success || visual.Step is null)
+        {
+            StatusHeadline.Text = "I stopped instead of distorting the images.";
+            StatusDetail.Text = visual.Message;
+            WorkflowName.Text = "Ambiguous crop/resize";
+            SetState(UiState.Ready);
+            return;
+        }
+
+        var name = visual.Step.HasCrop
+            ? visual.Step.HasOverlay ? "Crop + visual edit + export image" : "Crop + export image"
+            : visual.Step.HasOverlay ? "Resize + visual edit + export image" : "Resize + export image";
+
+        _workflow = detection.Workflow with
+        {
+            Name = name,
+            Resize = visual.Step,
+            Adapter = "Paint demonstration → visual intent → Windows Imaging"
+        };
+
         _resultsDirectory = _workflow.Output.DestinationDirectory;
         WorkflowName.Text = _workflow.Name;
         WorkflowSteps.Text = $"{_workflow.Resize}\nExport: {_workflow.Output.Format.ToString().ToUpperInvariant()}\nName rule: {_workflow.Output.FilenameTemplate}\nFolder: {_workflow.Output.DestinationDirectory}";
         StatusHeadline.Text = "Workflow detected. Doing the rest now.";
-        StatusDetail.Text = detection.Message + (sawPaint ? " Paint was observed during the demonstration." : " The image result was sufficient to infer this supported workflow.");
+        StatusDetail.Text = visual.Message + " " + detection.Message + (sawPaint ? " Paint was observed during the demonstration." : string.Empty);
 
         SaveWorkflow(_workflow);
         await RunWorkflowAsync(_workflow);
@@ -194,14 +227,16 @@ public partial class MainWindow : Window
                     continue;
                 }
 
-                var proposed = workflow.Output.ResolveOutputPath(input);
+                var proposed = workflow.Output.ResolveOutputPath(input, sequenceNumber: i + 2);
                 SafetyGuard.ValidateReplayTarget(input, proposed);
                 var output = SafetyGuard.MakeCollisionSafe(proposed);
 
                 CurrentItem.Text = Path.GetFileName(input);
-                ProgressText.Text = $"Processing {i + 1} of {remaining.Length}  ·  Resizing / exporting";
+                ProgressText.Text = $"Processing {i + 1} of {remaining.Length}  ·  {workflow.Resize}";
                 StatusHeadline.Text = $"AGAIN · Processing {i + 1} of {remaining.Length}";
-                StatusDetail.Text = "Current step: resize → encode → write safely → validate output.";
+                StatusDetail.Text = workflow.Resize.HasCrop
+                    ? "Current step: crop → visual overlay (if detected) → encode → validate."
+                    : "Current step: proportional resize → visual overlay (if detected) → encode → validate.";
 
                 await ImageProcessor.ProcessAsync(input, output, workflow.Resize, workflow.Output, token);
                 ImageProcessor.Validate(output, workflow.Resize);
@@ -216,7 +251,6 @@ public partial class MainWindow : Window
             }
             catch (Exception ex)
             {
-                // Safety behavior: one unexpected failure stops the batch. No blind continuation.
                 results.Add(new BatchItemResult(input, null, false, false, ex.Message));
                 StatusHeadline.Text = "Stopped safely.";
                 StatusDetail.Text = $"{Path.GetFileName(input)} failed validation or processing: {ex.Message} No later items were attempted.";
