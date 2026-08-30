@@ -1,0 +1,55 @@
+name: AGAIN Windows Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore Again.sln
+
+      - name: Build
+        run: dotnet build Again.sln -c Release --no-restore
+
+      - name: Smoke tests
+        run: dotnet run --project tests/Again.SmokeTests/Again.SmokeTests.csproj -c Release --no-build
+
+      - name: Publish self-contained Windows x64 app
+        run: dotnet publish src/Again.App/Again.App.csproj -c Release -r win-x64 --self-contained true -o artifacts/publish
+
+      - name: Install Inno Setup
+        shell: powershell
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts/installer | Out-Null
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (!(Test-Path $iscc)) { throw "Inno Setup compiler not found at $iscc" }
+          & $iscc "installer/Again.iss"
+          if (!(Test-Path "artifacts/installer/AGAIN-Setup-v0.1.0.exe")) { throw "Installer was not produced." }
+
+      - name: Upload Windows test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: AGAIN-Windows-v0.1.0
+          path: |
+            artifacts/installer/AGAIN-Setup-v0.1.0.exe
+            artifacts/publish/**
+          if-no-files-found: error
