@@ -7,7 +7,5 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Again.Core\Again.Core.csproj" />
-    <Reference Include="UIAutomationClient" />
-    <Reference Include="UIAutomationTypes" />
   </ItemGroup>
 </Project>
