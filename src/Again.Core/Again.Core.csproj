@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>Again.Core</AssemblyName>
+    <RootNamespace>Again.Core</RootNamespace>
+  </PropertyGroup>
+</Project>
