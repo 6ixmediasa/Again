@@ -8,7 +8,6 @@
     <AssemblyName>Again</AssemblyName>
     <RootNamespace>Again.App</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <ApplicationIcon>..\..\assets\again.ico</ApplicationIcon>
     <Version>0.1.0</Version>
     <FileVersion>0.1.0.0</FileVersion>
     <AssemblyVersion>0.1.0.0</AssemblyVersion>
