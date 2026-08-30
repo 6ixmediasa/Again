@@ -45,13 +45,13 @@ jobs:
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (!(Test-Path $iscc)) { throw "Inno Setup compiler not found at $iscc" }
           & $iscc "installer/Again.iss"
-          if (!(Test-Path "artifacts/installer/AGAIN-Setup-v0.1.1.exe")) { throw "Installer was not produced." }
+          if (!(Test-Path "artifacts/installer/AGAIN-Setup-v0.1.2.exe")) { throw "Installer was not produced." }
 
       - name: Upload Windows test build
         uses: actions/upload-artifact@v4
         with:
-          name: AGAIN-Windows-v0.1.1
+          name: AGAIN-Windows-v0.1.2
           path: |
-            artifacts/installer/AGAIN-Setup-v0.1.1.exe
+            artifacts/installer/AGAIN-Setup-v0.1.2.exe
             artifacts/publish/**
           if-no-files-found: error
