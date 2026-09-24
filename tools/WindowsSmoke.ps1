@@ -14,6 +14,14 @@ try {
   $control=$root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)
   if ($null -eq $control) { throw "Navigation control missing: $name" }
  }
+ Add-Type -AssemblyName System.Drawing
+ $rect=$root.Current.BoundingRectangle
+ $bitmap=New-Object System.Drawing.Bitmap([int]$rect.Width,[int]$rect.Height)
+ $graphics=[System.Drawing.Graphics]::FromImage($bitmap)
+ $graphics.CopyFromScreen([int]$rect.X,[int]$rect.Y,0,0,$bitmap.Size)
+ New-Item artifacts/evidence -ItemType Directory -Force | Out-Null
+ $bitmap.Save((Join-Path (Get-Location) 'artifacts/evidence/AGAIN-Windows-home.png'))
+ $graphics.Dispose();$bitmap.Dispose()
  Write-Output 'PASS: packaged process launches and all nine navigation controls are accessible.'
 } finally {
  if (!$process.HasExited) { [void]$process.CloseMainWindow(); if (!$process.WaitForExit(5000)) { $process.Kill() } }

@@ -8,6 +8,8 @@ dotnet build Again.sln -c $Configuration --no-restore
 Check-Exit
 dotnet test tests/Again.Tests -c $Configuration --no-build --logger "trx;LogFileName=core.trx"
 Check-Exit
+dotnet test tests/Again.WindowsTests -c $Configuration --no-build --logger "trx;LogFileName=windows.trx"
+Check-Exit
 dotnet publish src/Again.App -c $Configuration -r win-x64 --self-contained true -p:PublishSingleFile=false -o artifacts/publish
 Check-Exit
 New-Item artifacts/portable -ItemType Directory -Force | Out-Null

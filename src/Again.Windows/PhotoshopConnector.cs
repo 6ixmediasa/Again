@@ -1,20 +1,27 @@
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using Again.Core;
-using Context=Again.Core.ExecutionContext;
+using Context = Again.Core.ExecutionContext;
 namespace Again.Windows;
 /// <summary>Optional Windows Photoshop scripting bridge. Uses fixed, typed commands only.</summary>
-public sealed class PhotoshopConnector:IConnector {
- public string Id=>"photoshop";public string Name=>"Adobe Photoshop";public bool Supports(Step s)=>s.Method==Method.Native&&s.Get("connector")==Id;
- public bool Installed=>Type.GetTypeFromProgID("Photoshop.Application") is not null;
- public Task ExecuteAsync(Step step,Context context,CancellationToken token){token.ThrowIfCancellationRequested();if(!Installed)throw new InvalidDataException("Photoshop's Windows scripting bridge is not installed. Open Photoshop or repair its installation.");
-  var type=Type.GetTypeFromProgID("Photoshop.Application")!;object? app=null;try{app=Activator.CreateInstance(type);dynamic photoshop=app!;
-   var args=step.Args.ToDictionary(x=>x.Key,x=>Safety.Expand(x.Value,context.Values));args["operation"]=step.Operation.ToString();args["input"]=context.Input;string payload=JsonSerializer.Serialize(args);
-   var script="var a="+payload+";\n"+Script;string result=photoshop.DoJavaScript(script);if(result.StartsWith("ERROR:",StringComparison.Ordinal))throw new InvalidDataException("Photoshop could not complete this step: "+result[6..]);
-   if(step.Operation==Operation.Export){context.Output=args["output"];Safety.VerifyOutput(context.Output);}return Task.CompletedTask;
-  }finally{if(app is not null&&Marshal.IsComObject(app))Marshal.FinalReleaseComObject(app);}
- }
- const string Script="""
+public sealed class PhotoshopConnector : IConnector
+{
+    public string Id => "photoshop"; public string Name => "Adobe Photoshop"; public bool Supports(Step s) => s.Method == Method.Native && s.Get("connector") == Id;
+    public bool Installed => Type.GetTypeFromProgID("Photoshop.Application") is not null;
+    public Task ExecuteAsync(Step step, Context context, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested(); if (!Installed) throw new InvalidDataException("Photoshop's Windows scripting bridge is not installed. Open Photoshop or repair its installation.");
+        var type = Type.GetTypeFromProgID("Photoshop.Application")!; object? app = null; try
+        {
+            app = Activator.CreateInstance(type); dynamic photoshop = app!;
+            var args = step.Args.ToDictionary(x => x.Key, x => Safety.Expand(x.Value, context.Values)); args["operation"] = step.Operation.ToString(); args["input"] = context.Input; string payload = JsonSerializer.Serialize(args);
+            var script = "var a=" + payload + ";\n" + Script; string result = photoshop.DoJavaScript(script); if (result.StartsWith("ERROR:", StringComparison.Ordinal)) throw new InvalidDataException("Photoshop could not complete this step: " + result[6..]);
+            if (step.Operation == Operation.Export) { context.Output = args["output"]; Safety.VerifyOutput(context.Output); }
+            return Task.CompletedTask;
+        }
+        finally { if (app is not null && Marshal.IsComObject(app)) Marshal.FinalReleaseComObject(app); }
+    }
+    const string Script = """
 (function(){
  var oldUnits=app.preferences.rulerUnits; app.preferences.rulerUnits=Units.PIXELS;
  try {

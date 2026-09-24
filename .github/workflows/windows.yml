@@ -29,7 +29,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AGAIN-test-results
-          path: tests/**/TestResults/*.trx
+          path: |
+            tests/**/TestResults/*.trx
+            artifacts/evidence/*
       - name: Upload installer and portable package
         uses: actions/upload-artifact@v4
         with:
