@@ -1,10 +1,9 @@
-.vs/
-.idea/
 bin/
 obj/
+.vs/
 artifacts/
 *.user
-*.suo
-*.cache
-*.log
+*.db*
+*.pfx
+.env
 TestResults/

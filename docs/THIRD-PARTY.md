@@ -1,0 +1,2 @@
+# Third-party dependencies
+The project references .NET/WPF, Microsoft.Data.Sqlite, SQLitePCLRaw, Microsoft.Playwright, SixLabors.ImageSharp, SixLabors.ImageSharp.Drawing, SixLabors.Fonts and test packages. Preserve their license notices when packaging. Six Labors uses its own licensing terms; the publisher must determine eligibility before commercial distribution. No signing certificate is included.

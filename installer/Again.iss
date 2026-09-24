@@ -1,42 +1,32 @@
-#define MyAppName "AGAIN"
-#define MyAppVersion "0.1.3"
-#define MyAppPublisher "6ixMedia SA"
-#define MyAppURL "https://www.6ixmediasa.com"
-#define MyAppExeName "Again.exe"
-#define PublishDir "..\artifacts\publish"
-
+#define AppVersion "0.2.0"
 [Setup]
-AppId={{C56FFB9F-64F5-4E5E-976B-9CE2E6928BE2}
-AppName={#MyAppName}
-AppVersion={#MyAppVersion}
-AppPublisher={#MyAppPublisher}
-AppPublisherURL={#MyAppURL}
-AppSupportURL={#MyAppURL}
+AppId={{9A36231D-FA9C-4CD1-A91F-26DE99431101}
+AppName=AGAIN
+AppVersion={#AppVersion}
+AppPublisher=6ixMedia SA
+AppPublisherURL=https://www.6ixmediasa.com
 DefaultDirName={localappdata}\Programs\AGAIN
 DefaultGroupName=AGAIN
-DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\artifacts\installer
-OutputBaseFilename=AGAIN-Setup-v{#MyAppVersion}
+OutputBaseFilename=AGAIN-Setup-v{#AppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-ArchitecturesAllowed=x64compatible
-ArchitecturesInstallIn64BitMode=x64compatible
-UninstallDisplayIcon={app}\{#MyAppExeName}
-VersionInfoVersion=0.1.3.0
-VersionInfoCompany={#MyAppPublisher}
-VersionInfoDescription=AGAIN - Do it once. Never do it twice.
-
-[Files]
-Source: "{#PublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-
-[Icons]
-Name: "{autoprograms}\AGAIN"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\AGAIN"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
-
+UninstallDisplayIcon={app}\AGAIN.exe
+SetupIconFile=..\assets\again.ico
+VersionInfoVersion=0.2.0.0
+VersionInfoCompany=6ixMedia SA
+VersionInfoDescription=AGAIN — Do it once. Never do it twice.
+CloseApplications=yes
 [Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"; Flags: unchecked
-
+Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
+[Files]
+Source: "..\artifacts\publish\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+[Icons]
+Name: "{group}\AGAIN"; Filename: "{app}\AGAIN.exe"
+Name: "{autodesktop}\AGAIN"; Filename: "{app}\AGAIN.exe"; Tasks: desktopicon
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch AGAIN"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\AGAIN.exe"; Description: "Open AGAIN"; Flags: nowait postinstall skipifsilent
