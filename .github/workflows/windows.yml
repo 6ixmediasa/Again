@@ -1,0 +1,63 @@
+name: AGAIN Windows build
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Install installer compiler
+        run: choco install innosetup --no-progress -y
+      - name: Restore, compile, test and package
+        shell: pwsh
+        run: ./tools/Build.ps1
+      - name: Verify packaged desktop launch
+        shell: pwsh
+        run: ./tools/WindowsSmoke.ps1
+      - name: Verify installation and uninstall
+        shell: pwsh
+        run: ./tools/InstallerSmoke.ps1
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AGAIN-test-results
+          path: |
+            tests/**/TestResults/*.trx
+            artifacts/evidence/*
+      - name: Upload installer and portable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: AGAIN-Windows-v0.2.0
+          path: |
+            artifacts/installer/*.exe
+            artifacts/portable/*.zip
+            artifacts/SHA256SUMS.txt
+          if-no-files-found: error
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: AGAIN-Windows-v0.2.0
+          path: artifacts
+      - name: Create draft release for review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION_TAG: ${{ github.ref_name }}
+        run: gh release create "$VERSION_TAG" --draft --title "AGAIN $VERSION_TAG" --notes "See the requirement matrix and test evidence before distributing." $(find artifacts -type f)

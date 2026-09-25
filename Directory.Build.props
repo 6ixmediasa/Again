@@ -1,9 +1,1 @@
-<Project>
-  <PropertyGroup>
-    <LangVersion>latest</LangVersion>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
-    <Deterministic>true</Deterministic>
-  </PropertyGroup>
-</Project>
+<Project><PropertyGroup><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><LangVersion>12</LangVersion><EnableWindowsTargeting>true</EnableWindowsTargeting><Version>0.2.0</Version><Company>6ixMedia SA</Company><Authors>6ixMedia SA</Authors><Deterministic>true</Deterministic></PropertyGroup></Project>

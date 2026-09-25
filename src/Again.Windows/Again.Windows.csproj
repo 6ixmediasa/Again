@@ -1,11 +1,1 @@
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <TargetFramework>net8.0-windows</TargetFramework>
-    <UseWPF>true</UseWPF>
-    <AssemblyName>Again.Windows</AssemblyName>
-    <RootNamespace>Again.Windows</RootNamespace>
-  </PropertyGroup>
-  <ItemGroup>
-    <ProjectReference Include="..\Again.Core\Again.Core.csproj" />
-  </ItemGroup>
-</Project>
+<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net8.0-windows</TargetFramework><UseWPF>true</UseWPF></PropertyGroup><ItemGroup><ProjectReference Include="../Again.Core/Again.Core.csproj"/><PackageReference Include="Microsoft.Playwright" Version="1.55.0"/></ItemGroup></Project>

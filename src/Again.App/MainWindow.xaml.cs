@@ -1,399 +1,169 @@
-using System.ComponentModel;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Controls;
+using System.Windows.Interop;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using Microsoft.Win32;
 using Again.Core;
+using Again.Imaging;
 using Again.Windows;
-
+using WImage = System.Windows.Controls.Image;
 namespace Again.App;
-
 public partial class MainWindow : Window
 {
-    private enum UiState { Empty, Ready, Watching, Running, Completed }
-
-    private readonly List<string> _selectedFiles = [];
-    private readonly LocalStateStore _stateStore = new();
-    private LocalState _state;
-    private DemonstrationSession? _session;
-    private WorkflowDefinition? _workflow;
-    private CancellationTokenSource? _runCts;
-    private readonly ManualResetEventSlim _pauseGate = new(initialState: true);
-    private volatile bool _skipRequested;
-    private UiState _uiState = UiState.Empty;
-    private string? _resultsDirectory;
-
+    readonly WorkspaceViewModel vm = new(); readonly ImageEngine images = new(); readonly BrowserConnector browser = new(); Recorder? recorder; Window? indicator; BatchRunner? runner; CancellationTokenSource? cancellation; bool running; int previewIndex;
+    [StructLayout(LayoutKind.Sequential)] struct GlassMargins { public int Left,Right,Top,Bottom; }
+    [DllImport("dwmapi.dll")] static extern int DwmExtendFrameIntoClientArea(nint window,ref GlassMargins margins);
+    [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(nint hwnd, int attribute, ref int value, int size);
     public MainWindow()
     {
-        InitializeComponent();
-        _state = _stateStore.Load();
-        SetState(UiState.Empty);
+        InitializeComponent(); DataContext = vm; AllowDrop = true; Drop += (s, e) => { if (!running && recorder?.Active != true && e.Data.GetData(DataFormats.FileDrop) is string[] files) { vm.Inputs(files.Where(File.Exists)); Editor(); } }; var home = Button("AGAIN", Home); home.Content = new System.Windows.Shapes.Path { Data = Geometry.Parse("M 26,7 A 18,18 0 1 0 35,26 M 26,7 L 26,18 M 26,7 L 15,7"), Stroke = new SolidColorBrush(Color.FromRgb(197, 183, 237)), StrokeThickness = 4, Width = 40, Height = 40, Stretch = Stretch.Uniform }; home.ToolTip = "Home"; AutomationProperties.SetName(home, "AGAIN Home"); Navigation.Children.Add(home);
+        foreach (var (name, action) in new (string, Action)[] { ("Watch Me", Watch), ("New Workflow", () => { vm.New(); Editor(); }), ("My Workflows", Workflows), ("Run History", History), ("Applications", ApplicationsPage), ("Quick Tools", QuickTools), ("Settings", SettingsPage), ("Help", Help) }) { var b = Button(name, () => { if (!running&&recorder?.Active!=true&&!browser.Recording) action(); else vm.Status = "Finish the active run or stop watching before changing pages."; }); b.HorizontalContentAlignment = HorizontalAlignment.Left; Navigation.Children.Add(b); }
+        Loaded += (s, e) => { ApplyTheme(vm.Store.Settings().Theme); Home(); Width = Math.Min(Width, SystemParameters.WorkArea.Width); Height = Math.Min(Height, SystemParameters.WorkArea.Height);Left=SystemParameters.WorkArea.Left+(SystemParameters.WorkArea.Width-Width)/2;Top=SystemParameters.WorkArea.Top+(SystemParameters.WorkArea.Height-Height)/2; var drafts = vm.Store.List<Draft>("draft"); if (drafts.Count > 0) { var answer = Choose("AGAIN found unfinished work.", string.Join("\n", drafts.Take(5).Select(d => d.Workflow.Name + " · " + d.State)), "Restore", "Start Fresh", "View Details"); if (answer == "Restore") { vm.Restore(drafts[0]); Editor(); } else if (answer == "View Details") Home(); else vm.New(); } };
+        Closing += (s, e) => { if (running) { cancellation?.Cancel(); e.Cancel = true; vm.Status = "Cancelling safely. Wait for the current operation to stop, then close AGAIN."; return; } recorder?.Dispose(); indicator?.Close(); };
     }
-
-    private void SelectFiles_Click(object sender, RoutedEventArgs e)
+    void ApplyTheme(string theme) { bool light = theme == "Light" || (theme == "System" && (Microsoft.Win32.Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize","AppsUseLightTheme",0) as int? ?? 0)==1); Application.Current.Resources["CanvasBrush"] = new SolidColorBrush(light ? Color.FromRgb(242, 244, 248) : Color.FromRgb(16, 20, 29)); Application.Current.Resources["CardBrush"] = new SolidColorBrush(light ? Colors.White : Color.FromArgb(230, 28, 34, 48)); Application.Current.Resources["TextBrush"] = new SolidColorBrush(light ? Color.FromRgb(24, 32, 51) : Color.FromRgb(241, 242, 246)); Application.Current.Resources["MutedBrush"] = new SolidColorBrush(light ? Color.FromRgb(70, 80, 100) : Color.FromRgb(180, 188, 203)); if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22621) && !SystemParameters.HighContrast) { int backdrop = 3; DwmSetWindowAttribute(new WindowInteropHelper(this).Handle, 38, ref backdrop, 4); int dark = light ? 0 : 1; DwmSetWindowAttribute(new WindowInteropHelper(this).Handle, 20, ref dark, 4);var margins=new GlassMargins{Left=-1,Right=-1,Top=-1,Bottom=-1};var handle=new WindowInteropHelper(this).Handle;if(DwmExtendFrameIntoClientArea(handle,ref margins)==0){var source=HwndSource.FromHwnd(handle);if(source?.CompositionTarget is not null)source.CompositionTarget.BackgroundColor=Colors.Transparent;Application.Current.Resources["CanvasBrush"]=new SolidColorBrush(light?Color.FromArgb(235,242,244,248):Color.FromArgb(222,16,20,29));} } }
+    Button Button(string text, Action action) { var b = new Button { Content = text }; AutomationProperties.SetName(b, text); b.Click += (s, e) => { try { action(); } catch (Exception ex) { ShowError(ex); } }; return b; }
+    Button AsyncButton(string text, Func<Task> action) { var b = new Button { Content = text }; AutomationProperties.SetName(b, text); b.Click += async (s, e) => { b.IsEnabled = false; try { await action(); } catch (Exception ex) { ShowError(ex); } finally { b.IsEnabled = true; } }; return b; }
+    void ShowError(Exception ex) { vm.Status = UserErrors.Describe(ex); MessageBox.Show(this, vm.Status, "AGAIN · Needs your attention", MessageBoxButton.OK, MessageBoxImage.Warning); }
+    void Page(string name) { PageTitle.Text = name; ContentPanel.Children.Clear(); }
+    TextBlock Text(string text, double size = 14) => new() { Text = text, FontSize = size };
+    void Add(UIElement e) => ContentPanel.Children.Add(e);
+    void Heading(string title, string subtitle) { Add(Text(title, 30)); Add(Text(subtitle)); }
+    Border Card(params UIElement[] children) { var p = new StackPanel(); foreach (var child in children) p.Children.Add(child); var card = new Border { CornerRadius = new(14), Padding = new(20), Margin = new(0, 0, 0, 18), BorderBrush = new SolidColorBrush(Color.FromRgb(62, 73, 94)), BorderThickness = new(1), Child = p }; card.SetResourceReference(BackgroundProperty, "CardBrush"); return card; }
+    WrapPanel Row(params UIElement[] elements) { var r = new WrapPanel(); foreach (var e in elements) r.Children.Add(e); return r; }
+    TextBox Field(Panel panel, string label, string value, Action<string>? changed = null) { panel.Children.Add(Text(label)); var t = new TextBox { Text = value }; AutomationProperties.SetName(t, label); if (changed is not null) t.TextChanged += (s, e) => changed(t.Text); panel.Children.Add(t); return t; }
+    void Home()
     {
-        var dialog = new OpenFileDialog
+        if (running) return; Page("Home"); Heading("Do it once.\nNever do it twice.", "Your everyday work, ready to repeat. Show AGAIN once, review the steps, then choose your next items."); Add(Row(Button("Watch Me", Watch), Button("Run a Workflow", Workflows)));
+        var runs = vm.Store.List<RunRecord>("run"); Add(Card(Text(runs.Sum(r => r.Items.Count(i => i.Status == ItemStatus.Completed)) + " tasks completed", 26), Text("1  Click Watch Me.\n2  Perform the task once.\n3  Review what AGAIN learned.\n4  Select new items.\n5  Run it again.")));
+        var drafts = vm.Store.List<Draft>("draft"); if (drafts.Count > 0) { Add(Text("Unfinished work", 20)); foreach (var d in drafts.Take(6)) Add(Card(Text(d.Workflow.Name, 18), Text(d.State + " · " + d.Workflow.Steps.Count + " steps · " + d.Inputs.Count + " items"), Button("Restore", () => { vm.Restore(d); Editor(); }))); }
+        Add(Text("Recent workflows", 20)); var workflows = vm.Store.List<Workflow>("workflow").Where(w => !w.Archived).Take(4).ToList(); if (workflows.Count == 0) Add(Text("Your first workflow will appear here. Start with a simple image task or a Windows application.")); foreach (var w in workflows) Add(Card(Text(w.Name, 18), Text(w.Steps.Count + " steps · version " + w.Version), Button("Open", () => { vm.SetDraft(new(Guid.NewGuid(), w, [])); Editor(); })));
+    }
+    void Watch()
+    {
+        Page("Watch Me"); Heading("Show AGAIN how it’s done.", "Select the applications you want to watch. Everything else is ignored. No screenshots are taken by this recorder."); var selected = new HashSet<string>(); var apps = RunningApps(); foreach (var app in apps) { var check = new CheckBox { Content = app.Name + " — " + app.Title }; check.Checked += (s, e) => selected.Add(app.Path); check.Unchecked += (s, e) => selected.Remove(app.Path); Add(check); }
+        if (apps.Count == 0) Add(Text("Open the application you want to use, then refresh this page."));
+        var keyboard = new CheckBox { Content = "Capture text in accessible fields (password fields excluded)", IsChecked = false }; Add(keyboard); Add(Text("Text may contain private information. Leave capture off when working with sensitive content. Mark Sensitive pauses capture until you resume.")); Add(Row(Button("Start Watching", () => StartRecording(selected, keyboard.IsChecked == true)), Button("Refresh applications", Watch), Button("Browser task", BrowserWatch), Button("Quick Tools demonstration", () => { vm.New(); Editor(); }), Button("Cancel", Home)));
+    }
+    void BrowserWatch()
+    {
+        Page("Watch a browser task"); Heading("Show AGAIN a browser task.", "A separate Microsoft Edge window will open. Only the approved origin is observed; password and sensitive fields are excluded."); var url = Field(ContentPanel, "Website address", "https://"); var text = new CheckBox { Content = "Capture ordinary form text", IsChecked = false }; Add(text); Add(AsyncButton("Start Watching", async () =>
         {
-            Title = "Select images for AGAIN",
-            Multiselect = true,
-            Filter = "Images|*.jpg;*.jpeg;*.png;*.bmp;*.tif;*.tiff;*.gif|All files|*.*"
-        };
-        if (dialog.ShowDialog(this) != true) return;
-
-        _selectedFiles.Clear();
-        _selectedFiles.AddRange(dialog.FileNames.Select(Path.GetFullPath));
-        FilesList.ItemsSource = null;
-        FilesList.ItemsSource = _selectedFiles.Select((x, i) => i == 0 ? $"DEMO  ·  {Path.GetFileName(x)}" : $"{i + 1:00}  ·  {Path.GetFileName(x)}").ToArray();
-        _workflow = null;
-        _resultsDirectory = null;
-        WorkflowName.Text = "Nothing yet";
-        WorkflowSteps.Text = "The first selected image is the demonstration item.";
-        StatusHeadline.Text = _selectedFiles.Count == 1 ? "Add at least one more image to prove repetition." : $"{_selectedFiles.Count} images ready.";
-        StatusDetail.Text = "Click WATCH ME. In Paint you can crop, proportionally resize, add localized text/marks, rename and Save As. A text-only edit is supported too.";
-        SetState(_selectedFiles.Count >= 2 ? UiState.Ready : UiState.Empty);
+            vm.New(); indicator = new Window { Title = "AGAIN · Watching browser", Width = 480, Height = 185, Topmost = true, WindowStartupLocation = WindowStartupLocation.CenterScreen }; var panel = new StackPanel { Margin = new(16) }; var status = Text("● Watching browser", 18); panel.Children.Add(status); bool paused = false; var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) }; var start = DateTimeOffset.UtcNow; timer.Tick += (s, e) => status.Text = (paused ? "● Paused" : "● Watching browser") + " · " + (DateTimeOffset.UtcNow - start).ToString(@"mm\:ss") + " · " + vm.Draft.Workflow.Steps.Count + " steps";
+            panel.Children.Add(Row(AsyncButton("Pause / Sensitive", async () => { paused = !paused; await browser.PauseRecordingAsync(paused); }), Button("Stop Watching", () => indicator.Close()))); indicator.Content = panel; indicator.Closed += async (s, e) => { timer.Stop(); await browser.StopRecordingAsync(); Activate(); Editor(); }; indicator.Show(); timer.Start();
+            try { await browser.StartRecordingAsync(url.Text, text.IsChecked == true, step => Dispatcher.Invoke(() => { var steps = vm.Draft.Workflow.Steps.ToList(); steps.Add(step); vm.Edit(vm.Draft.Workflow with { Steps = steps }); })); } catch { indicator.Close(); throw; }
+        })); Add(Button("Cancel", Home));
     }
-
-    private void Clear_Click(object sender, RoutedEventArgs e)
+    record AppInfo(string Name, string Title, string Path, string Version);
+    List<AppInfo> RunningApps() { var list = new List<AppInfo>(); foreach (var p in Process.GetProcesses()) { using (p) try { if (p.Id == Environment.ProcessId || p.MainWindowHandle == 0) continue; var path = p.MainModule?.FileName; if (path is not null) list.Add(new(p.ProcessName, p.MainWindowTitle, path, FileVersionInfo.GetVersionInfo(path).FileVersion ?? "Unknown")); } catch { } } return list; }
+    void StartRecording(IEnumerable<string> selected, bool keyboard)
     {
-        StopSession();
-        _selectedFiles.Clear();
-        FilesList.ItemsSource = null;
-        _workflow = null;
-        WorkflowName.Text = "Nothing yet";
-        WorkflowSteps.Text = "AGAIN will summarize the demonstrated image workflow here.";
-        StatusHeadline.Text = "Choose the images you want to process.";
-        StatusDetail.Text = "The first image is the demonstration. AGAIN compares the before/after image locally to infer relative crop, fixed resize, preserve-size visual edits, output format, destination and naming intent.";
-        SetState(UiState.Empty);
+        if (recorder?.Active == true) throw new InvalidDataException("A demonstration is already running."); vm.New(); recorder = new(Dispatcher, selected, s => { var steps = vm.Draft.Workflow.Steps.ToList(); if (s.Operation == Operation.Type && steps.LastOrDefault() is { Operation: Operation.Type } previous && previous.Target == s.Target) steps[^1] = s with { Id = previous.Id }; else steps.Add(s); vm.Edit(vm.Draft.Workflow with { Steps = steps }); }) { CaptureText = keyboard }; recorder.Start();
+        indicator = new Window { Title = "AGAIN · Watching", Width = 480, Height = 190, Topmost = true, ResizeMode = ResizeMode.NoResize, WindowStartupLocation = WindowStartupLocation.CenterScreen }; var panel = new StackPanel { Margin = new(16) }; var status = Text("● Watching", 18); panel.Children.Add(status); var started = DateTimeOffset.UtcNow; var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) }; timer.Tick += (s, e) => status.Text = (recorder.Paused || recorder.Sensitive ? "● Paused" : "● Watching") + " · " + (DateTimeOffset.UtcNow - started).ToString(@"mm\:ss") + " · " + vm.Draft.Workflow.Steps.Count + " steps"; timer.Start();
+        panel.Children.Add(Row(Button("Pause / Resume", () => recorder.Paused = !recorder.Paused), Button("Mark Sensitive", () => { recorder.Sensitive = !recorder.Sensitive; recorder.Paused = recorder.Sensitive; }), Button("Stop Watching", () => indicator.Close()))); indicator.Content = panel; indicator.Closed += (s, e) => { timer.Stop(); recorder.Dispose(); Activate(); Editor(); }; indicator.Show(); WindowState = WindowState.Minimized;
     }
-
-    private void Watch_Click(object sender, RoutedEventArgs e)
+    void Editor()
     {
-        if (_selectedFiles.Count < 2) return;
-        try
+        WindowState = WindowState.Normal; Page("Workflow editor"); Heading("Make it repeatable.", "Changes are saved as a draft automatically. Review every step before running."); Field(ContentPanel, "Workflow name", vm.Draft.Workflow.Name, v => vm.Edit(vm.Draft.Workflow with { Name = v })); Field(ContentPanel, "Description", vm.Draft.Workflow.Description, v => vm.Edit(vm.Draft.Workflow with { Description = v }));
+        Add(Row(Button("Add step", () => EditStep(null)), Button("Save workflow", () => vm.Save()), Button("Choose input files", ChooseInputs), Button("Add folder", ChooseInputFolder), Button("Paste file paths", PasteInputs), Button("Preview", () => _ = PreviewSafely())));
+        var steps = vm.Draft.Workflow.Steps; for (var i = 0; i < steps.Count; i++)
         {
-            StopSession();
-            _session = new DemonstrationSession(_selectedFiles[0], _state.ExcludedProcesses);
-            _session.Start();
-
-            Process.Start(new ProcessStartInfo
+            int index = i; var step = steps[i]; var enabled = new CheckBox { Content = "Include this step", IsChecked = step.Enabled }; enabled.Checked += (s, e) => ReplaceStep(index, step with { Enabled = true }, false); enabled.Unchecked += (s, e) => ReplaceStep(index, step with { Enabled = false }, false);
+            Add(Card(Text((i + 1) + ". " + step.Name, 18), Text(step.Method + " · " + step.Reliability + " reliability"), enabled, Row(Button("Edit", () => EditStep(index)), Button("Move up", () => MoveStep(index, -1)), Button("Move down", () => MoveStep(index, 1)), Button("Duplicate", () => { var copy = vm.Draft.Workflow.Steps.ToList(); copy.Insert(index + 1, step with { Id = Guid.NewGuid() }); vm.Edit(vm.Draft.Workflow with { Steps = copy }); Editor(); }), Button("Delete", () => { var copy = vm.Draft.Workflow.Steps.ToList(); copy.RemoveAt(index); vm.Edit(vm.Draft.Workflow with { Steps = copy }); Editor(); }))));
+        }
+        if (steps.Count == 0) Add(Card(Text("No steps yet", 20), Text("Add a crop, text, logo or another action. For external applications, use Watch Me to capture accessible controls.")));
+        Add(Text("Output", 20)); Field(ContentPanel, "Output folder", vm.Draft.Workflow.OutputFolder, v => vm.Edit(vm.Draft.Workflow with { OutputFolder = v })); Add(Button("Choose folder", () => { var d = new OpenFolderDialog(); if (d.ShowDialog(this) == true) { vm.Edit(vm.Draft.Workflow with { OutputFolder = d.FolderName }); Editor(); } })); Field(ContentPanel, "Output name — use {original-name}, {number}, {date}", vm.Draft.Workflow.Naming, v => vm.Edit(vm.Draft.Workflow with { Naming = v })); var formats = new ComboBox { ItemsSource = new[] { "png", "jpg", "webp" }, SelectedItem = vm.Draft.Workflow.Format }; formats.SelectionChanged += (s, e) => vm.Edit(vm.Draft.Workflow with { Format = formats.SelectedItem?.ToString() ?? "png" }); Add(formats); var quality=new Slider{Minimum=1,Maximum=100,Value=vm.Draft.Workflow.Quality,IsSnapToTickEnabled=true,TickFrequency=1,Margin=new(0,0,0,16)};Add(Text("JPG / WebP quality"));quality.ValueChanged+=(sender,args)=>vm.Edit(vm.Draft.Workflow with{Quality=(int)quality.Value});Add(quality);var metadata=new CheckBox{Content="Preserve image metadata",IsChecked=vm.Draft.Workflow.PreserveMetadata};metadata.Checked+=(sender,args)=>vm.Edit(vm.Draft.Workflow with{PreserveMetadata=true});metadata.Unchecked+=(sender,args)=>vm.Edit(vm.Draft.Workflow with{PreserveMetadata=false});Add(metadata);Add(Text("When an output exists"));var conflict=new ComboBox{ItemsSource=Enum.GetValues<Conflict>(),SelectedItem=vm.Draft.Workflow.Conflict};conflict.SelectionChanged+=(sender,args)=>vm.Edit(vm.Draft.Workflow with{Conflict=(Conflict)conflict.SelectedItem});Add(conflict);
+        Add(Text(vm.Draft.Inputs.Count + " selected items")); foreach (var file in vm.Draft.Inputs.Take(10)) Add(Text(Path.GetFileName(file))); Add(Row(AsyncButton("Preview and run", Preview), Button("Export workflow", ExportWorkflow)));
+    }
+    void ReplaceStep(int i, Step s, bool redraw = true) { var steps = vm.Draft.Workflow.Steps.ToList(); steps[i] = s; vm.Edit(vm.Draft.Workflow with { Steps = steps }); if (redraw) Editor(); }
+    void MoveStep(int i, int delta) { var steps = vm.Draft.Workflow.Steps.ToList(); var next = i + delta; if (next < 0 || next >= steps.Count) return; (steps[i], steps[next]) = (steps[next], steps[i]); vm.Edit(vm.Draft.Workflow with { Steps = steps }); Editor(); }
+    void EditStep(int? index)
+    {
+        var original = index is null ? new Step { Name = "Crop to 4:5", Operation = Operation.Crop, Args = new() { ["ratio"] = "0.8" } } : vm.Draft.Workflow.Steps[index.Value]; var window = new Window { Title = "Edit step", Width = 560, Height = Math.Min(650,SystemParameters.WorkArea.Height-30), Owner = this, WindowStartupLocation = WindowStartupLocation.CenterOwner }; var outer = new DockPanel { Margin = new(22) }; var save = Button("Apply step", () => { }); DockPanel.SetDock(save, Dock.Bottom); outer.Children.Add(save); var form = new StackPanel(); outer.Children.Add(new ScrollViewer { Content = form, VerticalScrollBarVisibility = ScrollBarVisibility.Auto }); var name = Field(form, "Step name", original.Name); form.Children.Add(Text("Action")); var supported = new[] { Operation.Crop, Operation.Resize, Operation.Text, Operation.Logo, Operation.Rotate, Operation.Flip, Operation.Brightness, Operation.Contrast, Operation.Saturation, Operation.Export }; var operation = new ComboBox { ItemsSource = original.Method == Method.Internal ? supported : new[] { original.Operation }, SelectedItem = original.Operation }; form.Children.Add(operation); var argsPanel = new StackPanel(); form.Children.Add(argsPanel); var fields = new Dictionary<string, TextBox>();
+        void ShowFields()
+        {
+            argsPanel.Children.Clear(); fields.Clear(); var op = (Operation)operation.SelectedItem; var descriptors = op switch
             {
-                FileName = "mspaint.exe",
-                Arguments = Quote(_selectedFiles[0]),
-                UseShellExecute = true
-            });
-
-            StatusHeadline.Text = "I’m watching this demonstration locally.";
-            StatusDetail.Text = "In Paint: crop, resize, or leave the dimensions unchanged and only add localized text/paint marks. Then rename and Save As/export it. When finished, return here and click AGAIN.";
-            WorkflowName.Text = "Watching…";
-            WorkflowSteps.Text = "AGAIN does not record your typed text. It infers supported visual edits by comparing the local before/after image.";
-            SetState(UiState.Watching);
+                Operation.Crop => new[] { ("ratio", "Aspect ratio (4:5 = 0.8)", "0.8"), ("anchorX", "Horizontal anchor (0 left, 1 right)", "0.5"), ("anchorY", "Vertical anchor (0 top, 1 bottom)", "0.5") },
+                Operation.Resize => new[] { ("width", "Maximum width", "1080"), ("height", "Maximum height", "1080"), ("strategy", "Sizing: fit or fill", "fit") },
+                Operation.Text => new[] { ("text", "Text content", "Your text"), ("font", "Font", "Segoe UI"), ("scale", "Font size as a fraction of image width", "0.065"), ("color", "Color (hex)", "FFFFFF"), ("x", "Horizontal position (0–1)", "0.5"), ("y", "Vertical position (0–1)", "0.92"), ("maxWidth", "Text width (0–1)", "0.9") },
+                Operation.Logo => new[] { ("file", "Logo file path", ""), ("scale", "Logo width (0–1)", "0.2"), ("x", "Horizontal position (0–1)", "0.9"), ("y", "Vertical position (0–1)", "0.9") },
+                Operation.Rotate => new[] { ("degrees", "Rotation degrees", "90") },
+                Operation.Flip => new[] { ("axis", "horizontal or vertical", "horizontal") },
+                Operation.Brightness or Operation.Contrast or Operation.Saturation => new[] { ("amount", "Amount (1 = unchanged)", "1.1") },
+                Operation.BrowserType => new[] { ("text", "Text to enter", original.Get("text")),("target","Field label",original.Get("target")) }, Operation.BrowserOpen => new[] {("url","Website address",original.Get("url"))}, Operation.BrowserClick => new[] {("target","Button or link name",original.Get("target"))},
+                Operation.Type => new[] { ("text", "Text to enter", original.Get("text")) },
+                _ => Array.Empty<(string, string, string)>()
+            }; foreach (var (key, label, fallback) in descriptors) fields[key] = Field(argsPanel, label, original.Get(key, fallback));
         }
-        catch (Exception ex)
-        {
-            StopSession();
-            SetState(UiState.Ready);
-            ShowError("AGAIN could not start the Paint demonstration.", ex.Message);
-        }
+        operation.SelectionChanged += (s, e) => ShowFields(); ShowFields(); save.Click += (s, e) => { var step = original with { Name = name.Text, Operation = (Operation)operation.SelectedItem, Args = original.Args.Concat(fields.Select(p=>new KeyValuePair<string,string>(p.Key,p.Value.Text))).GroupBy(p=>p.Key).ToDictionary(g=>g.Key,g=>g.Last().Value) }; if (index is null) { var steps = vm.Draft.Workflow.Steps.ToList(); steps.Add(step); vm.Edit(vm.Draft.Workflow with { Steps = steps }); } else ReplaceStep(index.Value, step, false); window.Close(); Editor(); }; window.Content = outer; window.ShowDialog();
     }
-
-    private async void Again_Click(object sender, RoutedEventArgs e)
+    void ChooseInputFolder() { var d = new OpenFolderDialog(); if (d.ShowDialog(this) != true) return; var sub = Choose("Include subfolders?", d.FolderName, "This folder only", "Include subfolders", "Cancel"); if (sub == "Cancel") return; vm.Inputs(Directory.EnumerateFiles(d.FolderName, "*", sub == "Include subfolders" ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly)); previewIndex = 0; Editor(); }
+    void PasteInputs() { if (!Clipboard.ContainsText()) throw new InvalidDataException("Copy file paths first, one per line."); vm.Inputs(Clipboard.GetText().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim().Trim('"'))); Editor(); }
+    void ChooseInputs() { var dialog = new OpenFileDialog { Multiselect = true, Title = "Choose files to process", Filter = "All files|*.*" }; if (dialog.ShowDialog(this) == true) { vm.Inputs(dialog.FileNames); previewIndex = 0; Editor(); } }
+    async Task PreviewSafely() { try { await Preview(); } catch (Exception e) { ShowError(e); } }
+    async Task Preview()
     {
-        if (_uiState == UiState.Watching)
-        {
-            await FinishDemonstrationAndRunAsync();
-            return;
-        }
-
-        if (_workflow is not null && _uiState is UiState.Ready or UiState.Completed)
-            await RunWorkflowAsync(_workflow);
+        if (vm.Draft.Inputs.Count == 0) { if(vm.Draft.Workflow.Steps.All(step=>step.Method!=Method.Internal&&step.Operation!=Operation.BrowserUpload&&!(step.Method==Method.Native&&step.Operation==Operation.Launch))) vm.Inputs(new[]{"One run"}); else {ChooseInputs(); if(vm.Draft.Inputs.Count==0)return;} }
+        if (vm.Draft.Workflow.Steps.Count == 0) throw new InvalidDataException("Add at least one step before running."); Page("Preview"); Heading("Review before repeating.", "Originals are preserved. Existing image outputs receive a numbered filename."); var draft = vm.Draft; var w = draft.Workflow; previewIndex = Math.Clamp(previewIndex, 0, draft.Inputs.Count - 1); var input = draft.Inputs[previewIndex]; Add(Text("Item " + (previewIndex + 1) + " of " + draft.Inputs.Count + " · " + Path.GetFileName(input), 18));
+        if (w.Steps.All(s => s.Method == Method.Internal)) { vm.Status = "Rendering preview…"; using var rendered = await images.RenderAsync(input, w.Steps, Safety.Values(input, previewIndex + 1)); using var stream = new MemoryStream(); await rendered.SaveAsync(stream, new SixLabors.ImageSharp.Formats.Png.PngEncoder()); stream.Position = 0; var bitmap = new BitmapImage(); bitmap.BeginInit(); bitmap.CacheOption = BitmapCacheOption.OnLoad; bitmap.StreamSource = stream; bitmap.EndInit(); bitmap.Freeze(); var original=new BitmapImage();original.BeginInit();original.CacheOption=BitmapCacheOption.OnLoad;original.UriSource=new Uri(Path.GetFullPath(input));original.EndInit();original.Freeze();var comparison=new Grid{Margin=new(0,12,0,16)};comparison.ColumnDefinitions.Add(new());comparison.ColumnDefinitions.Add(new());var left=Card(Text("Original"),new WImage{Source=original,Height=280,Stretch=Stretch.Uniform});left.Margin=new(0,0,10,0);var right=Card(Text("Expected result"),new WImage{Source=bitmap,Height=280,Stretch=Stretch.Uniform});Grid.SetColumn(right,1);comparison.Children.Add(left);comparison.Children.Add(right);Add(comparison); Add(Text(rendered.Width + " × " + rendered.Height + " · " + w.Format.ToUpperInvariant())); }
+        else Add(Card(Text("Application workflow", 20), Text("The external application will perform these steps. Review its identity and output paths before approving. A visual result cannot be predicted without running that application.")));
+        foreach (var s in w.Steps.Where(s => s.Enabled)){Add(Text(s.Name + " · " + s.Method + " · " + s.Reliability));foreach(var argument in s.Args)Add(Text(argument.Key+": "+argument.Value));} Add(Text("Output folder: " + w.OutputFolder)); foreach (var step in w.Steps.Where(x => x.Target is not null)) Add(Text("Application: " + step.Target!.ProcessPath + " · Window: " + step.Target.WindowTitle + " · Domain: " + step.Target.Domain)); foreach (var step in w.Steps.Where(x => x.Args.ContainsKey("output"))) Add(Text("Export destination: " + step.Get("output"))); if(w.Steps.Any(s=>s.Method==Method.Internal||s.Operation==Operation.BrowserUpload))Add(Text("Missing inputs: " + draft.Inputs.Count(f => !File.Exists(f))));
+        Add(Row(AsyncButton("Previous preview", async () => { previewIndex = Math.Max(0, previewIndex - 1); await Preview(); }), AsyncButton("Next preview", async () => { previewIndex = Math.Min(draft.Inputs.Count - 1, previewIndex + 1); await Preview(); }), AsyncButton("Regenerate preview", Preview), Button("Edit workflow", Editor), AsyncButton("Approve and Run", Run)));
+        vm.Status = "Preview ready. Review the selected files and approve when ready.";
     }
-
-    private async Task FinishDemonstrationAndRunAsync()
+    async Task Run()
     {
-        if (_session is null) return;
-        AgainButton.IsEnabled = false;
-        StatusHeadline.Text = "Understanding what changed…";
-
-        await Task.Delay(450);
-        _session.Stop();
-
-        var outputPath = _session.FindBestOutputCandidate();
-        if (string.IsNullOrWhiteSpace(outputPath))
-        {
-            StatusHeadline.Text = "I couldn’t find the demonstrated output.";
-            StatusDetail.Text = "AGAIN watches the selected image folder plus Desktop, Documents, Pictures and Downloads. Save/export the demo into one of those locations, then run WATCH ME again.";
-            WorkflowName.Text = "No workflow detected";
-            SetState(UiState.Ready);
-            StopSession();
-            return;
-        }
-
-        if (!ImageInspector.TryRead(outputPath, out var outputInfo) || outputInfo is null)
-        {
-            ShowError("The output was detected but could not be read as an image.", outputPath);
-            SetState(UiState.Ready);
-            StopSession();
-            return;
-        }
-
-        var sourceInfo = _session.OriginalSourceInfo;
-        var sawPaint = _session.SawPaint();
-        var detection = WorkflowDetector.Detect(sourceInfo, outputInfo);
-        StopSession();
-
-        if (!detection.Success || detection.Workflow is null)
-        {
-            StatusHeadline.Text = "I watched it, but this workflow isn’t supported yet.";
-            StatusDetail.Text = detection.Message;
-            WorkflowName.Text = "Unsupported demonstration";
-            SetState(UiState.Ready);
-            return;
-        }
-
-        VisualIntentAnalysis visual;
-        try
-        {
-            visual = VisualIntentAnalyzer.AnalyzeAndPersist(sourceInfo.Path, outputPath, detection.Workflow.Id);
-        }
-        catch (Exception ex)
-        {
-            StatusHeadline.Text = "I couldn’t safely understand the visual edit.";
-            StatusDetail.Text = ex.Message + " No remaining images were changed.";
-            WorkflowName.Text = "Unsupported demonstration";
-            SetState(UiState.Ready);
-            return;
-        }
-
-        if (!visual.Success || visual.Step is null)
-        {
-            StatusHeadline.Text = "I stopped instead of distorting the images.";
-            StatusDetail.Text = visual.Message;
-            WorkflowName.Text = "Ambiguous image transformation";
-            SetState(UiState.Ready);
-            return;
-        }
-
-        var name = visual.Step.GeometryMode switch
-        {
-            ImageGeometryMode.CropRelative when visual.Step.HasOverlay => "Relative crop + visual edit + export image",
-            ImageGeometryMode.CropRelative => "Relative crop + export image",
-            ImageGeometryMode.PreserveOriginal when visual.Step.HasOverlay => "Visual edit + export image",
-            ImageGeometryMode.PreserveOriginal => "Rename/convert + export image",
-            _ when visual.Step.HasOverlay => "Resize + visual edit + export image",
-            _ => "Resize + export image"
-        };
-
-        _workflow = detection.Workflow with
-        {
-            Name = name,
-            Resize = visual.Step,
-            Adapter = "Paint demonstration → visual intent → Windows Imaging"
-        };
-
-        _resultsDirectory = _workflow.Output.DestinationDirectory;
-        WorkflowName.Text = _workflow.Name;
-        WorkflowSteps.Text = $"{_workflow.Resize}\nExport: {_workflow.Output.Format.ToString().ToUpperInvariant()}\nName rule: {_workflow.Output.FilenameTemplate}\nFolder: {_workflow.Output.DestinationDirectory}";
-        StatusHeadline.Text = "Workflow detected. Doing the rest now.";
-        StatusDetail.Text = visual.Message + " " + detection.Message + (sawPaint ? " Paint was observed during the demonstration." : string.Empty);
-
-        SaveWorkflow(_workflow);
-        await RunWorkflowAsync(_workflow);
+        if (running) return; if (vm.Dirty) { var result = Choose("You haven’t saved this demonstration yet. Save it now and continue?", "All demonstrated actions and selected files will be preserved.", "Save and Run", "Continue Editing", "Cancel"); if (result != "Save and Run") { if (result == "Continue Editing") Editor(); return; } vm.Save(); }
+        running = true; cancellation = new(); IItemProcessor processor = vm.Draft.Workflow.Steps.All(s => s.Method == Method.Internal) ? new ImageProcessor(images,async path=>await Dispatcher.InvokeAsync(()=>Choose("Replace this existing output?",path,"Replace","Keep existing")=="Replace")) : new ApplicationProcessor(new IConnector[] { new WindowsConnector(), browser, new PhotoshopConnector() }, async (step, error) => await (await Dispatcher.InvokeAsync(() => Repair(step, error))));
+        runner = new(vm.Store, processor); Page("Running"); Heading("Repeating your workflow.", "You can pause or cancel at any time. Each completed output is verified."); var progress = Text("Preparing…", 20); Add(progress); var list = new StackPanel(); Add(list); var runControls=Row(Button("Pause", () => { runner.Pause.Pause(); vm.Status = "Paused. Waiting for the current operation to finish."; }), Button("Resume", () => { runner.Pause.Resume(); vm.Status = "Running…"; }), Button("Cancel", () => cancellation?.Cancel()));Add(runControls);
+        runner.Changed += (i, item) => Dispatcher.Invoke(() => { progress.Text = (i + 1) + " / " + vm.Draft.Inputs.Count + " · " + item.Status; if (item.Status != ItemStatus.Running) list.Children.Add(Text(Path.GetFileName(item.Input) + " · " + item.Status + (item.Error is null ? "" : "\n" + item.Error))); });
+        try { var result = await Task.Run(() => runner.RunAsync(vm.Draft, token: cancellation.Token)); vm.Status = result.Items.Count(i => i.Status == ItemStatus.Completed) + " completed · " + result.Items.Count(i=>i.Status==ItemStatus.CompletedWithWarning)+" warnings · "+ result.Items.Count(i => i.Status == ItemStatus.Failed) + " failed"; Add(Row(Button("Open output folder", () => OpenFolder(vm.Draft.Workflow.OutputFolder)), Button("View run history", History), Button("Retry failed items", () => { vm.Inputs(result.Items.Where(i => i.Status == ItemStatus.Failed).Select(i => i.Input)); Editor(); }))); } finally { running = false; foreach(var control in runControls.Children.OfType<Button>())control.IsEnabled=false;cancellation.Dispose(); cancellation = null; }
     }
-
-    private async Task RunWorkflowAsync(WorkflowDefinition workflow)
+    async Task<RepairDecision> Repair(Step step, Exception error)
     {
-        var remaining = _selectedFiles.Skip(1).ToArray();
-        if (remaining.Length == 0) return;
-
-        _runCts?.Dispose();
-        _runCts = new CancellationTokenSource();
-        var token = _runCts.Token;
-        _pauseGate.Set();
-        _skipRequested = false;
-        SetState(UiState.Running);
-
-        var started = DateTimeOffset.Now;
-        var results = new List<BatchItemResult>();
-        Progress.Maximum = remaining.Length;
-        Progress.Value = 0;
-        _resultsDirectory = workflow.Output.DestinationDirectory;
-
-        for (var i = 0; i < remaining.Length; i++)
+        var choice = Choose("This step needs your attention: " + step.Name, error.Message + "\nExpected target: " + step.Target?.Name + "\nApplication: " + step.Target?.ProcessPath, "Retry", "Repair target", "Perform manually", "Skip", "Stop");
+        if (choice == "Repair target")
         {
-            var input = remaining[i];
-            try
-            {
-                await Task.Run(() => _pauseGate.Wait(token), token);
-                token.ThrowIfCancellationRequested();
-
-                if (_skipRequested)
-                {
-                    _skipRequested = false;
-                    results.Add(new BatchItemResult(input, null, false, true, "Skipped by user."));
-                    Progress.Value = i + 1;
-                    continue;
-                }
-
-                var proposed = workflow.Output.ResolveOutputPath(input, sequenceNumber: i + 2);
-                SafetyGuard.ValidateReplayTarget(input, proposed);
-                var output = SafetyGuard.MakeCollisionSafe(proposed);
-
-                CurrentItem.Text = Path.GetFileName(input);
-                ProgressText.Text = $"Processing {i + 1} of {remaining.Length}  ·  {workflow.Resize}";
-                StatusHeadline.Text = $"AGAIN · Processing {i + 1} of {remaining.Length}";
-                StatusDetail.Text = workflow.Resize.GeometryMode switch
-                {
-                    ImageGeometryMode.CropRelative => "Current step: relative crop → visual overlay (if detected) → encode → validate.",
-                    ImageGeometryMode.PreserveOriginal => "Current step: preserve image size → visual overlay (if detected) → encode → validate.",
-                    _ => "Current step: proportional fixed resize → visual overlay (if detected) → encode → validate."
-                };
-
-                await ImageProcessor.ProcessAsync(input, output, workflow.Resize, workflow.Output, token);
-                ImageProcessor.Validate(output, input, workflow.Resize);
-
-                results.Add(new BatchItemResult(input, output, true, false, "Completed and validated."));
-                Progress.Value = i + 1;
-            }
-            catch (OperationCanceledException)
-            {
-                results.Add(new BatchItemResult(input, null, false, true, "Stopped by user."));
-                break;
-            }
-            catch (Exception ex)
-            {
-                results.Add(new BatchItemResult(input, null, false, false, ex.Message));
-                StatusHeadline.Text = "Stopped safely.";
-                StatusDetail.Text = $"{Path.GetFileName(input)} failed validation or processing: {ex.Message} No later items were attempted.";
-                break;
-            }
+            if (step.Target is null) throw new InvalidDataException("This step needs an application target before it can be repaired.");
+            var done = new TaskCompletionSource<Target?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var picker = new Window { Title = "AGAIN · Select the corrected target", Width = 480, Height = 170, Topmost = true, WindowStartupLocation = WindowStartupLocation.CenterScreen };
+            var panel = new StackPanel { Margin = new(18) }; panel.Children.Add(Text("Choose Capture, then point at the correct control within three seconds. You do not need to click it."));
+            panel.Children.Add(Row(AsyncButton("Capture in 3 seconds", async () => { await Task.Delay(3000); var selected = WindowsConnector.TargetUnderPointer(); if (!string.Equals(selected.ProcessPath, step.Target.ProcessPath, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("The target must belong to the expected application."); done.TrySetResult(selected); }), Button("Cancel repair", () => picker.Close()))); picker.Content = panel;
+            picker.Closed += (s, e) => done.TrySetResult(null); picker.Show(); var target = await done.Task; picker.Close();
+            if (target is null) return new("stop"); var corrected = step with { Target = target, Method = Method.UIAutomation, Reliability = Reliability.High }; var steps = vm.Draft.Workflow.Steps.ToList(); var index = steps.FindIndex(s => s.Id == step.Id); if (index >= 0) { steps[index] = corrected; vm.Edit(vm.Draft.Workflow with { Steps = steps }); vm.Save(); }
+            return new("retry", corrected);
         }
-
-        var summary = new BatchRunSummary(workflow.Id, started, DateTimeOffset.Now, results);
-        SaveHistory(workflow, summary);
-        CurrentItem.Text = string.Empty;
-        ProgressText.Text = $"{summary.Completed} completed · {summary.Skipped} skipped · {summary.Errors} errors";
-
-        if (summary.Errors == 0 && !token.IsCancellationRequested)
-        {
-            StatusHeadline.Text = "Done.";
-            StatusDetail.Text = $"{summary.Completed} tasks completed, {summary.Errors} errors. Every produced image passed existence and per-item dimension validation.";
-        }
-        else if (token.IsCancellationRequested)
-        {
-            StatusHeadline.Text = "Stopped.";
-            StatusDetail.Text = $"{summary.Completed} completed before the run was stopped.";
-        }
-
-        SetState(UiState.Completed);
-        OpenResultsButton.Visibility = Directory.Exists(_resultsDirectory) ? Visibility.Visible : Visibility.Collapsed;
+        if (choice == "Perform manually") { var answer = Choose("Perform this step in the application.", "Return here when the step is finished. AGAIN will then continue with the following action.", "I finished this step", "Stop"); return new(answer == "I finished this step" ? "manual" : "stop"); }
+        return new(choice == "Retry" ? "retry" : choice == "Skip" ? "skip" : "stop");
     }
-
-    private void Pause_Click(object sender, RoutedEventArgs e)
+    void Workflows() { Page("My Workflows"); Heading("Your work, ready to repeat.", "Find a workflow, make a copy, or return to an earlier version."); Add(Row(Button("New workflow", () => { vm.New(); Editor(); }), Button("Import workflow", ImportWorkflow))); var search = new TextBox(); AutomationProperties.SetName(search, "Search workflows"); Add(search); var list = new StackPanel(); Add(list); void Refresh() { list.Children.Clear(); var workflows = vm.Store.List<Workflow>("workflow").Where(w => !w.Archived && w.Name.Contains(search.Text, StringComparison.OrdinalIgnoreCase)).OrderByDescending(w => w.Favorite).ThenBy(w => w.Name).ToList(); if (workflows.Count == 0) list.Children.Add(Text("No matching workflows yet.")); foreach (var w in workflows) list.Children.Add(Card(Text((w.Favorite ? "★ " : "") + w.Name, 19), Text(w.Description + "\n" + w.Steps.Count + " steps · version " + w.Version + " · " + w.Modified.ToLocalTime().ToString("g")), Row(Button("Open", () => { vm.SetDraft(new(Guid.NewGuid(), w, [])); Editor(); }), Button("Duplicate", () => { vm.SetDraft(new(Guid.NewGuid(), w with { Id = Guid.NewGuid(), Version = 1, Name = w.Name + " copy" }, [])); Editor(); }), Button(w.Favorite ? "Unfavorite" : "Favorite", () => { vm.Store.Save("workflow", w.Id.ToString(), w.Version, w with { Favorite = !w.Favorite }); Refresh(); }), Button("Versions", () => Versions(w)), Button("Delete", () => { if (MessageBox.Show(this, "Delete this workflow and its saved versions? Generated files will be kept.", "Delete workflow", MessageBoxButton.YesNo) == MessageBoxResult.Yes) { vm.Store.Delete("workflow", w.Id.ToString()); Refresh(); } })))); } search.TextChanged += (s, e) => Refresh(); Refresh(); }
+    void Versions(Workflow w) { Page("Workflow versions"); foreach (var v in vm.Store.List<Workflow>("workflow", true).Where(x => x.Id == w.Id)) Add(Card(Text("Version " + v.Version + " · " + v.Modified.ToLocalTime()), Text(v.Steps.Count + " steps"), Button("Restore as new version", () => { vm.SetDraft(new(Guid.NewGuid(), v, [])); vm.Save(); Editor(); }))); Add(Button("Back", Workflows)); }
+    void ExportWorkflow() { var d = new SaveFileDialog { FileName = Safety.Filename(vm.Draft.Workflow.Name) + ".again.json", Filter = "AGAIN workflow|*.again.json" }; if (d.ShowDialog(this) == true) { WorkflowJson.Validate(vm.Draft.Workflow); File.WriteAllText(d.FileName, WorkflowJson.Write(vm.Draft.Workflow)); vm.Status = "Workflow exported. Review it before sharing private paths or text."; } }
+    void ImportWorkflow() { var d = new OpenFileDialog { Filter = "AGAIN workflow|*.json" }; if (d.ShowDialog(this) != true) return; if(new FileInfo(d.FileName).Length>4_000_000)throw new InvalidDataException("This workflow file is too large.");var w = WorkflowJson.Import(File.ReadAllText(d.FileName)) with { Id = Guid.NewGuid(), Version = 1 }; vm.SetDraft(new(Guid.NewGuid(), w, [])); Editor(); vm.Status = "Imported for review. Check all actions, application targets and output paths before running."; }
+    void History() { Page("Run History"); Heading("Every run, accounted for.", "Clearing history keeps generated files."); Add(Button("Clear history", () => { if (MessageBox.Show(this, "Clear all run history? Your output files will stay where they are.", "Clear history", MessageBoxButton.YesNo) == MessageBoxResult.Yes) { vm.Store.Delete("run"); History(); } })); var runs = vm.Store.List<RunRecord>("run"); if (runs.Count == 0) Add(Text("Your completed and failed runs will appear here.")); foreach (var r in runs) { var details = string.Join("\n", r.Items.Select(i => Path.GetFileName(i.Input) + " · " + i.Status + (i.Error is null ? "" : " · " + i.Error))); Add(Card(Text(r.Name + " · version " + r.WorkflowVersion, 19), Text(r.Started.ToLocalTime().ToString("g")), Text(details), Row(Button("Run again", () => LoadRun(r, false)), Button("Retry failed items", () => LoadRun(r, true)), Button("Export report", () => { var d = new SaveFileDialog { FileName = "AGAIN-run-" + r.Id + ".json", Filter = "JSON report|*.json" }; if (d.ShowDialog(this) == true) File.WriteAllText(d.FileName, WorkflowJson.Write(r)); }), Button("Open output", () => { var output = r.Items.FirstOrDefault(i => i.Output is not null)?.Output; if (output is null) throw new InvalidDataException("This run has no completed outputs."); OpenFolder(Path.GetDirectoryName(output)!); })))); } }
+    void LoadRun(RunRecord r, bool failed) { var w = vm.Store.List<Workflow>("workflow", true).FirstOrDefault(x => x.Id == r.WorkflowId && x.Version == r.WorkflowVersion) ?? throw new InvalidDataException("This workflow version was deleted. Import it or choose another workflow."); vm.SetDraft(new(Guid.NewGuid(), w, r.Items.Where(i => !failed || i.Status == ItemStatus.Failed).Select(i => i.Input).ToList())); Editor(); }
+    void ApplicationsPage()
     {
-        if (_pauseGate.IsSet)
-        {
-            _pauseGate.Reset();
-            PauseButton.Content = "RESUME";
-            StatusDetail.Text = "Paused. AGAIN will not start the next item until you resume.";
-        }
-        else
-        {
-            _pauseGate.Set();
-            PauseButton.Content = "PAUSE";
-        }
+        Page("Applications"); Heading("Use the tools you already know.", "Windows accessibility works with compatible controls. Availability varies by application and version."); Add(Button("Refresh", ApplicationsPage)); foreach (var app in RunningApps()) Add(Card(Text(app.Name, 20), Text(app.Title + "\nVersion " + app.Version + "\n" + app.Path), Text("Connection: Windows accessibility · Requires a recorded and reviewed target"), Button("Test connection", () => { using var process = Process.GetProcessesByName(app.Name).FirstOrDefault(p => p.MainWindowHandle != 0); if (process is null) throw new InvalidDataException("Open the application first."); var root = AutomationElement.FromHandle(process.MainWindowHandle); var count = root.FindAll(TreeScope.Descendants, System.Windows.Automation.Condition.TrueCondition).Count; vm.Status = "Connection test: " + count + " accessible elements found. Individual actions still need testing."; })));
+        var ps = new PhotoshopConnector(); Add(Card(Text("Adobe Photoshop", 20), Text(ps.Installed ? "Windows scripting bridge detected. Real Photoshop workflow testing is still required." : "Optional · Photoshop scripting bridge is not installed."))); Add(Card(Text("Microsoft Edge", 20), Text("Browser connector uses role, label, text and placeholder targets in a separate browser session."))); Add(Card(Text("FL Studio and CapCut", 20), Text("General Windows capture is available for accessible controls. Native action profiles and visual timeline automation are not implemented in this build.")));
     }
-
-    private void Skip_Click(object sender, RoutedEventArgs e)
+    void QuickTools() { Page("Quick Tools"); Heading("Small tasks. Done in batches.", "Create an image workflow or prepare a file operation with a naming preview."); Add(Row(Button("Image workflow", () => { vm.New(); Editor(); }), Button("File tools", FileToolsPage))); }
+    void FileToolsPage()
     {
-        _skipRequested = true;
-        StatusDetail.Text = "Skip requested. AGAIN will skip the current/next safe item boundary.";
+        Page("File Quick Tools"); var selected = new List<string>(); var folder = vm.Store.Settings().OutputFolder; var naming = "{original-name}-{number}"; var action = "Copy"; Add(Button("Choose files", () => { var d = new OpenFileDialog { Multiselect = true }; if (d.ShowDialog(this) == true) { selected = d.FileNames.ToList(); vm.Status = selected.Count + " files selected"; } })); Field(ContentPanel, "Output folder", folder, v => folder = v); Field(ContentPanel, "Naming rule", naming, v => naming = v); var options = new ComboBox { ItemsSource = new[] { "Copy", "Move", "Rename" }, SelectedItem = "Copy" }; options.SelectionChanged += (s, e) => action = options.SelectedItem.ToString()!; Add(options); var preview = new TextBlock(); Add(preview); List<FileChange>? plan = null; List<FileChange>? completed = null; var tools = new FileTools(); Add(Row(Button("Preview changes", () => { plan = tools.Plan(selected, folder, naming, action); preview.Text = string.Join("\n", plan.Select(p => Path.GetFileName(p.Source) + " → " + p.Destination)); }), AsyncButton("Apply changes", async () => { if (plan is null || plan.Count == 0) throw new InvalidDataException("Choose files and preview changes first."); if (Choose("Apply " + plan.Count + " file changes?", preview.Text, "Apply", "Cancel") != "Apply") return; completed = await tools.ExecuteAsync(plan, default); vm.Status = completed.Count + " files processed"; plan = null; }), Button("Undo moves", () => { if (completed is null) throw new InvalidDataException("No completed moves to undo."); tools.Undo(completed); completed = null; vm.Status = "Moves undone."; }), AsyncButton("Find duplicates", async () => { var groups = await tools.DuplicatesAsync(selected, default); preview.Text = groups.Count == 0 ? "No identical files found." : string.Join("\n\n", groups.Select(g => string.Join("\n", g))); })));
     }
-
-    private void Stop_Click(object sender, RoutedEventArgs e)
+    void SettingsPage()
     {
-        _pauseGate.Set();
-        _runCts?.Cancel();
+        Page("Settings"); var settings = vm.Store.Settings(); Heading("Make AGAIN yours.", "Core processing stays local. Recording starts only when you approve a Watch Me session."); var output = Field(ContentPanel, "Default output folder", settings.OutputFolder); Add(Text("Theme")); var theme = new ComboBox { ItemsSource = new[] { "System", "Light", "Dark" }, SelectedItem = settings.Theme }; Add(theme); var reduced = new CheckBox { Content = "Reduced motion", IsChecked = settings.ReducedMotion }; Add(reduced); Add(Button("Save settings", () => { vm.Store.SaveSettings(settings with { OutputFolder = output.Text, Theme = theme.SelectedItem.ToString()!, ReducedMotion = reduced.IsChecked == true }); ApplyTheme(theme.SelectedItem.ToString()!); vm.Status = "Settings saved."; })); Add(Card(Text("Privacy", 20), Text("No account, telemetry, cloud uploads or background recording. This build does not capture screenshots. Password controls are excluded; mark other private fields as sensitive.")));
+        Add(Button("Delete all local workflow data", () => { if (Choose("Delete local workflows, drafts, settings and history?", "Generated output files are preserved. This cannot be undone.", "Delete", "Cancel") == "Delete") { foreach (var kind in new[] { "workflow", "draft", "settings", "run", "connector" }) vm.Store.Delete(kind); vm.New(); Home(); } })); Add(Text("AGAIN 0.2.0 · 6ixMedia SA"));
     }
-
-    public void PauseMonitoringFromTray()
-    {
-        if (_uiState == UiState.Watching)
-        {
-            StopSession();
-            StatusHeadline.Text = "Monitoring paused.";
-            StatusDetail.Text = "The current demonstration was discarded for privacy/safety. Click WATCH ME when you want to demonstrate again.";
-            SetState(_selectedFiles.Count >= 2 ? UiState.Ready : UiState.Empty);
-        }
-    }
-
-    private void OpenResults_Click(object sender, RoutedEventArgs e)
-    {
-        if (string.IsNullOrWhiteSpace(_resultsDirectory) || !Directory.Exists(_resultsDirectory)) return;
-        Process.Start(new ProcessStartInfo("explorer.exe", Quote(_resultsDirectory)) { UseShellExecute = true });
-    }
-
-    private void FooterLink_RequestNavigate(object sender, System.Windows.Navigation.RequestNavigateEventArgs e)
-    {
-        Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
-        e.Handled = true;
-    }
-
-    private void SaveWorkflow(WorkflowDefinition workflow)
-    {
-        _state.Workflows.RemoveAll(x => x.Id == workflow.Id);
-        _state.Workflows.Insert(0, workflow);
-        if (_state.Workflows.Count > 25) _state.Workflows.RemoveRange(25, _state.Workflows.Count - 25);
-        _stateStore.Save(_state);
-    }
-
-    private void SaveHistory(WorkflowDefinition workflow, BatchRunSummary summary)
-    {
-        _state.History.Insert(0, new WorkflowHistoryEntry(workflow.Id, workflow.Name, summary.FinishedAt, summary.Completed, summary.Skipped, summary.Errors, workflow.Summary));
-        if (_state.History.Count > 100) _state.History.RemoveRange(100, _state.History.Count - 100);
-        _stateStore.Save(_state);
-    }
-
-    private void StopSession()
-    {
-        _session?.Dispose();
-        _session = null;
-        MonitoringBadge.Text = "MONITORING OFF";
-    }
-
-    private void SetState(UiState state)
-    {
-        _uiState = state;
-        SelectFilesButton.IsEnabled = state is not UiState.Watching and not UiState.Running;
-        ClearButton.IsEnabled = state is not UiState.Watching and not UiState.Running;
-        WatchButton.IsEnabled = state is UiState.Ready or UiState.Completed;
-        AgainButton.IsEnabled = state == UiState.Watching || (_workflow is not null && state == UiState.Completed);
-        PauseButton.IsEnabled = state == UiState.Running;
-        SkipButton.IsEnabled = state == UiState.Running;
-        StopButton.IsEnabled = state == UiState.Running;
-        MonitoringBadge.Text = state == UiState.Watching ? "WATCHING LOCALLY" : "MONITORING OFF";
-        if (state != UiState.Running) PauseButton.Content = "PAUSE";
-        if (state != UiState.Completed) OpenResultsButton.Visibility = Visibility.Collapsed;
-    }
-
-    private static string Quote(string value) => "\"" + value.Replace("\"", "\\\"") + "\"";
-
-    private void ShowError(string title, string detail)
-    {
-        MessageBox.Show(this, detail, title, MessageBoxButton.OK, MessageBoxImage.Error);
-    }
-
-    protected override void OnClosing(CancelEventArgs e)
-    {
-        var app = (App)System.Windows.Application.Current;
-        if (!app.IsExiting)
-        {
-            e.Cancel = true;
-            Hide();
-            return;
-        }
-        StopSession();
-        _runCts?.Cancel();
-        _runCts?.Dispose();
-        _pauseGate.Dispose();
-        base.OnClosing(e);
-    }
+    void Help() { Page("Help"); Heading("A little guidance.", "Start with a small, safe task and review every step."); Add(Card(Text("Your first image workflow", 20), Text("Open Quick Tools → Image workflow. Add a crop or text step, choose files, select an output folder, and preview. Approve the run when the preview is right. Text and crop steps are applied independently to every image."))); Add(Card(Text("Watching an application", 20), Text("Open the application first, then select it in Watch Me. Accessible clicks and opted-in field text become steps. Stop Watching to review them. External application actions require the expected window to remain active."))); Add(Card(Text("Recovering unfinished work", 20), Text("Every edit is saved as a draft. Restore unfinished work from Home. If you did not save before running, choose Save and Run to preserve the demonstration and continue."))); Add(Card(Text("Current release status", 20), Text("This rebuild is under verification. Visual recognition, full application profiles and several advanced workflow features remain incomplete. See the included requirement matrix before relying on it for unattended work."))); }
+    string Choose(string title, string message, params string[] options) { var result = "Cancel"; var window = new Window { Title = "AGAIN", Width = 560, SizeToContent = SizeToContent.Height, MaxHeight = 600, Owner = this, WindowStartupLocation = WindowStartupLocation.CenterOwner }; var p = new StackPanel { Margin = new(24) }; p.Children.Add(Text(title, 22)); p.Children.Add(new ScrollViewer { Content = Text(message), MaxHeight = 300, VerticalScrollBarVisibility = ScrollBarVisibility.Auto }); var row = new WrapPanel(); foreach (var option in options) row.Children.Add(Button(option, () => { result = option; window.Close(); })); p.Children.Add(row); window.Content = p; window.ShowDialog(); return result; }
+    void OpenFolder(string path) { if (!Directory.Exists(path)) throw new DirectoryNotFoundException(); Process.Start(new ProcessStartInfo { FileName = Path.GetFullPath(path), UseShellExecute = true }); }
 }

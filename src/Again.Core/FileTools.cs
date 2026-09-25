@@ -1,0 +1,13 @@
+using System.Security.Cryptography;
+namespace Again.Core;
+public sealed record FileChange(string Source, string Destination, string Action);
+public sealed class FileTools
+{
+    public List<FileChange> Plan(IEnumerable<string> inputs, string destination, string naming, string action = "Copy")
+    {
+        if (action is not ("Copy" or "Move" or "Rename")) throw new InvalidDataException("Choose Copy, Move or Rename."); var i = 0; var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase); return inputs.Select(file => { var values = Safety.Values(file, ++i); var name = Safety.Filename(Safety.Expand(naming, values)); var target = Safety.Under(destination, name + Path.GetExtension(file)); if (!seen.Add(target) || File.Exists(target)) throw new IOException("Two files would have the same output name. Add {number} to the naming rule."); return new FileChange(file, target, action); }).ToList();
+    }
+    public async Task<List<FileChange>> ExecuteAsync(IEnumerable<FileChange> plan, CancellationToken token) { var completed = new List<FileChange>(); foreach (var item in plan) { token.ThrowIfCancellationRequested(); Directory.CreateDirectory(Path.GetDirectoryName(item.Destination)!); if (File.Exists(item.Destination)) throw new IOException("The output already exists."); var temp = Path.Combine(Path.GetDirectoryName(item.Destination)!, ".again-" + Guid.NewGuid() + ".tmp"); try { await using (var source = File.OpenRead(item.Source)) await using (var output = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None)) await source.CopyToAsync(output, token); Safety.VerifyOutput(temp); token.ThrowIfCancellationRequested(); File.Move(temp, item.Destination, false); if (item.Action is "Move" or "Rename") File.Delete(item.Source); completed.Add(item); } finally { if (File.Exists(temp)) File.Delete(temp); } } return completed; }
+    public void Undo(IEnumerable<FileChange> completed) { foreach (var item in completed.Reverse()) { if (item.Action is "Move" or "Rename") { if (File.Exists(item.Source)) throw new IOException("The original location now contains another file. Undo stopped."); File.Move(item.Destination, item.Source, false); } else throw new InvalidDataException("Copied-file deletion requires a separate user confirmation."); } }
+    public async Task<List<List<string>>> DuplicatesAsync(IEnumerable<string> files, CancellationToken token) { var groups = new Dictionary<string, List<string>>(); foreach (var path in files) { await using var f = File.OpenRead(path); var hash = Convert.ToHexString(await SHA256.HashDataAsync(f, token)); if (!groups.TryGetValue(hash, out var list)) groups[hash] = list = []; list.Add(path); } return groups.Values.Where(x => x.Count > 1).ToList(); }
+}
