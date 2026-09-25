@@ -2,7 +2,7 @@
 ## Current installation
 Windows accessibility and image processing are included. Photoshop is optional: install licensed Photoshop with its Windows scripting/COM registration. The bridge probes `Photoshop.Application`; no external plugin or arbitrary script file is imported. Open Photoshop before testing. Supported commands are open, proportional crop/resize, add text, rotate and PNG/JPG export. Remaining requested layer/action commands are incomplete.
 
-Browser uses installed Microsoft Edge through the bundled Playwright driver in a separate session. Approved profile reuse, browser recording and secure credential-entry UX remain incomplete. Password fields stop for manual entry.
+Browser uses installed Microsoft Edge through the bundled Playwright driver in a separate session. Approved profile reuse and secure credential-entry UX remain incomplete. Scoped browser recording captures ordinary fields and semantic clicks on the approved origin. Password fields stop for manual entry.
 
 FL Studio and CapCut currently have general accessibility capability declarations, not full native or timeline profiles. Do not assume invisible controls can be automated.
 

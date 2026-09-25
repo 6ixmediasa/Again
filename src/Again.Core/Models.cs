@@ -65,6 +65,7 @@ public static class WorkflowJson
     public static Workflow Import(string json) { if (json.Length > 4_000_000) throw new InvalidDataException("Workflow exceeds the size limit."); var w = Read<Workflow>(json); Validate(w); return w; }
     public static void Validate(Workflow w)
     {
+        if(w.Steps is null||w.Variables is null||w.Steps.Any(s=>s is null||s.Args is null))throw new InvalidDataException("Workflow data is incomplete.");
         if (w.SchemaVersion != Workflow.CurrentSchema) throw new InvalidDataException("This workflow version is not supported. Keep the original and update AGAIN.");
         if (string.IsNullOrWhiteSpace(w.Name) || w.Steps.Count > 2000 || w.Steps.Select(s => s.Id).Distinct().Count() != w.Steps.Count) throw new InvalidDataException("Invalid workflow name or steps.");
         if (w.Variables.Any(v => v.Secret && v.Default is not null)) throw new InvalidDataException("Secret values must be stored in Windows Credential Manager.");
@@ -72,6 +73,7 @@ public static class WorkflowJson
         {
             if (!Enum.IsDefined(s.Operation) || !Enum.IsDefined(s.Method) || s.Retries is < 0 or > 10 || s.TimeoutSeconds is < 1 or > 3600) throw new InvalidDataException("Invalid step settings.");
             if (s.Args.Keys.Any(k => k.Equals("password", StringComparison.OrdinalIgnoreCase) || k.Equals("script", StringComparison.OrdinalIgnoreCase))) throw new InvalidDataException("Embedded passwords and scripts are not allowed.");
+            if(s.Method==Method.Coordinates&&s.Operation!=Operation.Click)throw new InvalidDataException("Coordinate fallback currently supports clicks only.");
             if (s.Method == Method.Coordinates && (s.Target is null || s.Target.X is < 0 or > 1 || s.Target.Y is < 0 or > 1)) throw new InvalidDataException("A coordinate step needs a valid relative target.");
         }
     }

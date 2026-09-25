@@ -78,7 +78,7 @@ public sealed class ImageEngine
         await image.SaveAsync(path, encoder, token); Safety.VerifyOutput(path); await Image.IdentifyAsync(path, token);
     }
 }
-public sealed class ImageProcessor(ImageEngine engine) : IItemProcessor
+public sealed class ImageProcessor(ImageEngine engine,Func<string,Task<bool>>? approveReplace=null) : IItemProcessor
 {
     public async Task<string> ProcessAsync(Workflow w, string input, int index, IReadOnlyDictionary<string, string> variables, PauseGate pause, CancellationToken token)
     {
@@ -87,13 +87,15 @@ public sealed class ImageProcessor(ImageEngine engine) : IItemProcessor
         using var image = await engine.RenderAsync(input, w.Steps, values, pause, token); Directory.CreateDirectory(w.OutputFolder);
         var name = Safety.Filename(Safety.Expand(w.Naming, values)); var path = Safety.Under(w.OutputFolder, name + "." + Safety.Filename(w.Format));
         if (string.Equals(Path.GetFullPath(input), Path.GetFullPath(path), OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) throw new InvalidDataException("Choose a separate output path to preserve the original.");
-        if (File.Exists(path) && w.Conflict is Conflict.NeverOverwrite or Conflict.Ask) throw new InvalidDataException("An output already exists. Choose another name or the numbered-copy option.");
+        bool replace=w.Conflict==Conflict.Replace;
+        if(File.Exists(path)&&w.Conflict==Conflict.Ask){if(approveReplace is null||!await approveReplace(path))throw new InvalidDataException("This output was not replaced. Choose another name or numbered-copy mode.");replace=true;}
+        if(File.Exists(path)&&w.Conflict==Conflict.NeverOverwrite)throw new InvalidDataException("An output already exists. Choose another name or numbered-copy mode.");
         var temporary = Path.Combine(w.OutputFolder, ".again-" + Guid.NewGuid().ToString("N") + ".tmp");
         try
         {
             await ImageEngine.SaveAsync(image, temporary, w.Format, w.Quality, w.PreserveMetadata, token); await pause.WaitAsync(token); token.ThrowIfCancellationRequested();
             if (w.Conflict == Conflict.NumberedCopy) { var candidate = path; for (var n = 1; ; n++) { try { File.Move(temporary, candidate, false); path = candidate; break; } catch (IOException) when (File.Exists(candidate)) { candidate = Safety.Under(w.OutputFolder, name + " (" + n + ")." + Safety.Filename(w.Format)); } } }
-            else File.Move(temporary, path, w.Conflict == Conflict.Replace); Safety.VerifyOutput(path); return path;
+            else File.Move(temporary, path, replace); Safety.VerifyOutput(path); return path;
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }

@@ -1,7 +1,7 @@
 name: AGAIN Windows build
 on:
   push:
-    branches: [main, 'rebuild/**']
+    branches: [main]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
@@ -24,6 +24,9 @@ jobs:
       - name: Verify packaged desktop launch
         shell: pwsh
         run: ./tools/WindowsSmoke.ps1
+      - name: Verify installation and uninstall
+        shell: pwsh
+        run: ./tools/InstallerSmoke.ps1
       - name: Upload verification evidence
         if: always()
         uses: actions/upload-artifact@v4

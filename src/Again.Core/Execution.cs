@@ -7,6 +7,7 @@ public sealed class ExecutionContext
     public Dictionary<string, object> State { get; } = [];
     public Action<string>? Progress { get; init; }
 }
+public sealed class ItemWarningException(string output,string message):Exception(message){public string Output{get;}=output;}
 public sealed record RepairDecision(string Action, Step? Replacement = null);
 public interface IConnector { string Id { get; } string Name { get; } bool Supports(Step step); Task ExecuteAsync(Step step, ExecutionContext context, CancellationToken token); }
 public interface IItemProcessor { Task<string> ProcessAsync(Workflow workflow, string input, int index, IReadOnlyDictionary<string, string> variables, PauseGate pause, CancellationToken token); }
@@ -21,6 +22,7 @@ public sealed class BatchRunner(Store store, IItemProcessor processor)
             var input = draft.Inputs[i]; ItemResult item;
             try { await Pause.WaitAsync(token); token.ThrowIfCancellationRequested(); store.SaveDraft(draft with { Workflow = w, NextItem = i, State = "Running" }); Changed?.Invoke(i, new(input, null, ItemStatus.Running)); var output = await processor.ProcessAsync(w, input, i + 1, variables ?? new Dictionary<string, string>(), Pause, token); item = new(input, string.IsNullOrEmpty(output) ? null : output, ItemStatus.Completed); }
             catch (OperationCanceledException) { item = new(input, null, ItemStatus.Cancelled); results.Add(item); Changed?.Invoke(i, item); break; }
+            catch(ItemWarningException e){item=new(input,string.IsNullOrEmpty(e.Output)?null:e.Output,ItemStatus.CompletedWithWarning,e.Message);}
             catch (Exception e) { item = new(input, null, ItemStatus.Failed, UserErrors.Describe(e)); }
             results.Add(item); Changed?.Invoke(i, item); store.Save("run", runId.ToString(), 1, new RunRecord(runId, w.Id, w.Version, w.Name, started, DateTimeOffset.UtcNow, results.ToList())); store.SaveDraft(draft with { Workflow = w, NextItem = i + 1, State = "Running" });
             if (item.Status == ItemStatus.Failed && w.OnFailure != FailureRule.Continue) break;

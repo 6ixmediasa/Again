@@ -15,7 +15,7 @@ No row marked partial satisfies the complete requested section. Source presence 
 | 9 | Conditions | Partial; unit tested | File existence and orientation predicates. Full branching, app-state conditions and recovery action graph incomplete. |
 | 10 | Connections | Partial | Running-app discovery and UIA test; capability/state catalog. Independent install/update/remove UI incomplete. |
 | 11 | Photoshop | Partial; untested in Photoshop | Optional COM fixed scripting: open, crop, resize, text, rotate, PNG/JPG export. Advanced layer/action commands and real app tests missing. |
-| 12 | Browser | Partial; Windows verification pending | Edge launch; role/label/text/placeholder click/type/upload/extract/download. Recording source added; profiles, multiple-page UI, tables and credential approval UI incomplete. |
+| 12 | Browser | Partial; Windows verification pending | Edge launch; role/label/text/placeholder click/type/upload/extract/download. Scoped browser recording tested against the controlled local page; profiles, multiple-page UI, tables and credential approval UI incomplete. |
 | 13 | FL Studio | Partial | General accessible controls only. Full action/native/MIDI/visual profile not implemented. |
 | 14 | CapCut | Partial | General accessible controls only. Timeline/captions/render/export profile not implemented. |
 | 15 | Windows automation | Partial; Windows verification pending | Guarded unique semantic clicks/fields and relative coordinate fallback. Launch/dialog/shortcut/drag/clipboard workflows incomplete. |
@@ -38,7 +38,7 @@ No row marked partial satisfies the complete requested section. Source presence 
 | 32 | Installer/portable | First Windows build passed | Self-contained win-x64 publish and Inno per-user installer configured; first installer/portable built and packaged launch passed on Windows; clean install/uninstall still pending. |
 | 33 | Repository | Implemented for present code | Solution/projects/source/tests/docs/installer/CI/license placeholder; complete requested product implementation still pending. |
 | 34 | GitHub Actions | First Windows execution passed | Restore/build/test/publish/package/smoke/artifacts/checksums/draft tag release. Full integration suite incomplete. |
-| 35 | Automated tests | Partial | 38 passing core/image/visual cases at checkpoint; not every requested category has a test. |
+| 35 | Automated tests | Partial | 44 passing portable cases locally plus 2 Windows/browser integration cases on prior CI; not every requested category has a test. |
 | 36 | Acceptance A–I | Incomplete | See ACCEPTANCE.md; no fabricated external-app or installer results. |
 | 37 | Definition of done | NOT MET | Several required implementations and Windows/external-app acceptance gates remain. |
 | 38 | Working method | In progress | Plan/matrix created, implementation/build/test fixes progressing; no permission checkpoint requested. |

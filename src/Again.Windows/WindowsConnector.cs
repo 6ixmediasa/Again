@@ -46,12 +46,12 @@ public sealed class ApplicationProcessor(IEnumerable<IConnector> connectors, Fun
 {
     public async Task<string> ProcessAsync(Workflow workflow, string input, int index, IReadOnlyDictionary<string, string> variables, PauseGate pause, CancellationToken token)
     {
-        var values = Safety.Values(input, index); values["input"] = input; foreach (var v in variables) values[v.Key] = v.Value; var context = new Context { Input = input, Output = "", Values = values };
+        var values = Safety.Values(input, index); values["input"] = input; foreach (var v in variables) values[v.Key] = v.Value; var context = new Context { Input = input, Output = "", Values = values };var warnings=new List<string>();
         foreach (var recordedStep in workflow.Steps.Where(x => x.Enabled).ToList())
         {
             var step = recordedStep; await pause.WaitAsync(token); if (!Conditions.Evaluate(step.When, values)) continue; var connector = connectors.FirstOrDefault(c => c.Supports(step)) ?? throw new InvalidDataException("Enable a connector for " + step.Name); int attempt = 0;
-            while (true) { try { using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token); timeout.CancelAfter(TimeSpan.FromSeconds(step.TimeoutSeconds)); await connector.ExecuteAsync(step, context, timeout.Token); break; } catch (Exception e) when (e is not OperationCanceledException || !token.IsCancellationRequested) { if (attempt++ < step.Retries) continue; var choice = await repair(step, e); if (choice.Replacement is not null) { step = choice.Replacement; var indexOfStep = workflow.Steps.FindIndex(s => s.Id == recordedStep.Id); workflow.Steps[indexOfStep] = step; } if (choice.Action == "retry") continue; if (choice.Action is "skip" or "manual") break; throw new InvalidDataException("The workflow stopped at: " + step.Name); } }
+            while (true) { try { using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token); timeout.CancelAfter(TimeSpan.FromSeconds(step.TimeoutSeconds)); await connector.ExecuteAsync(step, context, timeout.Token); break; } catch (Exception e) when (e is not OperationCanceledException || !token.IsCancellationRequested) { if (attempt++ < step.Retries) continue; var choice = await repair(step, e); if (choice.Replacement is not null) { step = choice.Replacement; var indexOfStep = workflow.Steps.FindIndex(s => s.Id == recordedStep.Id); workflow.Steps[indexOfStep] = step; } if (choice.Action == "retry") continue; if (choice.Action is "skip" or "manual"){warnings.Add((choice.Action=="skip"?"Skipped: ":"Performed manually: ")+step.Name);break;} throw new OperationCanceledException("The workflow stopped at: " + step.Name); } }
         }
-        if (context.Output != "") Safety.VerifyOutput(context.Output); return context.Output;
+        if (context.Output != "") Safety.VerifyOutput(context.Output);if(warnings.Count>0)throw new ItemWarningException(context.Output,string.Join("; ",warnings)); return context.Output;
     }
 }
